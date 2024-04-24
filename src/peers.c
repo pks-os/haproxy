@@ -2532,7 +2532,7 @@ static inline int peer_treat_awaited_msg(struct appctx *appctx, struct peer *pee
 		else if (msg_head[1] == PEER_MSG_CTRL_RESYNCFINISHED) {
 			TRACE_PROTO("received control message", PEERS_EV_CTRLMSG,
 			            NULL, &msg_head[1], peers->local->id, peer->id);
-			if (peer->learnstate == PEER_LR_ST_PROCESSING || (peer->local && peer->learnstate == PEER_LR_ST_ASSIGNED)) {
+			if (peer->learnstate == PEER_LR_ST_PROCESSING) {
 				peer->learnstate = PEER_LR_ST_FINISHED;
 				peer->flags |= PEER_F_WAIT_SYNCTASK_ACK;
 				task_wakeup(peers->sync_task, TASK_WOKEN_MSG);
@@ -2542,7 +2542,7 @@ static inline int peer_treat_awaited_msg(struct appctx *appctx, struct peer *pee
 		else if (msg_head[1] == PEER_MSG_CTRL_RESYNCPARTIAL) {
 			TRACE_PROTO("received control message", PEERS_EV_CTRLMSG,
 			            NULL, &msg_head[1], peers->local->id, peer->id);
-			if (peer->learnstate == PEER_LR_ST_PROCESSING || (peer->local && peer->learnstate == PEER_LR_ST_ASSIGNED)) {
+			if (peer->learnstate == PEER_LR_ST_PROCESSING) {
 				peer->learnstate = PEER_LR_ST_FINISHED;
 				peer->flags |= (PEER_F_LEARN_NOTUP2DATE|PEER_F_WAIT_SYNCTASK_ACK);
 				task_wakeup(peers->sync_task, TASK_WOKEN_MSG);
@@ -2613,7 +2613,9 @@ static inline int peer_treat_awaited_msg(struct appctx *appctx, struct peer *pee
 
 
 /*
- * Send any message to <peer> peer.
+ * Send messages to <peer> peer. This functions processes ack, teach and
+ * confirmation messages.
+ *
  * Returns 1 if succeeded, or -1 or 0 if failed.
  * -1 means an internal error occurred, 0 is for a peer protocol error leading
  * to a peer state change (from the peer I/O handler point of view).
@@ -2640,16 +2642,6 @@ static inline int peer_send_msgs(struct appctx *appctx,
                                  struct peer *peer, struct peers *peers)
 {
 	int repl;
-
-	/* Need to request a resync */
-	if (peer->learnstate == PEER_LR_ST_ASSIGNED) {
-		if (!peer->local) {
-			repl = peer_send_resync_reqmsg(appctx, peer, peers);
-			if (repl <= 0)
-				return repl;
-		}
-		peer->learnstate = PEER_LR_ST_PROCESSING;
-	}
 
 	/* Nothing to read, now we start to write */
 	if (peer->tables) {
@@ -3135,6 +3127,22 @@ switchstate:
 
 				if (curpeer->flags & PEER_F_WAIT_SYNCTASK_ACK)
 					goto out;
+
+				/* peer is assigned of a lesson, start it */
+				if (curpeer->learnstate == PEER_LR_ST_ASSIGNED) {
+					/* lesson must be requested for a remote peer while
+					 * the lesson starts immediately for a local peer
+					 */
+					if (!curpeer->local) {
+						repl = peer_send_resync_reqmsg(appctx, curpeer, curpeers);
+						if (repl <= 0) {
+							if (reql == -1)
+								goto switchstate;
+							goto send_msgs;
+						}
+					}
+					curpeer->learnstate = PEER_LR_ST_PROCESSING;
+				}
 
 				reql = peer_recv_msg(appctx, (char *)msg_head, sizeof msg_head, &msg_len, &totl);
 				if (reql <= 0) {
