@@ -3390,6 +3390,7 @@ static void sync_peer_app_state(struct peers *peers, struct peer *peer)
 	}
 }
 
+/* Process the sync task for a running process.  It is called from process_peer_sync() only */
 static void __process_running_peer_sync(struct task *task, struct peers *peers, unsigned int state)
 {
 	struct peer *ps;
@@ -3559,6 +3560,7 @@ static void __process_running_peer_sync(struct task *task, struct peers *peers, 
 	}
 }
 
+/* Process the sync task for a stopping process. It is called from process_peer_sync() only */
 static void __process_stopping_peer_sync(struct task *task, struct peers *peers, unsigned int state)
 {
 	struct peer *ps;
