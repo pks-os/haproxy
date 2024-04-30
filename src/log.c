@@ -415,7 +415,7 @@ int parse_logformat_tag_args(char *args, struct logformat_node *node, char **err
  */
 static int parse_logformat_tag(char *arg, int arg_len, char *name, int name_len, int typecast,
                                char *tag, int tag_len, struct lf_expr *lf_expr,
-                               char **err)
+                               int *defoptions, char **err)
 {
 	int j;
 	struct list *list_format= &lf_expr->nodes.list;
@@ -434,14 +434,14 @@ static int parse_logformat_tag(char *arg, int arg_len, char *name, int name_len,
 			node->typecast = typecast;
 			if (name && name_len)
 				node->name = my_strndup(name, name_len);
-			node->options = lf_expr->nodes.options;
+			node->options = *defoptions;
 			if (arg_len) {
 				node->arg = my_strndup(arg, arg_len);
 				if (!parse_logformat_tag_args(node->arg, node, err))
 					goto error_free;
 			}
 			if (node->tag->type == LOG_FMT_GLOBAL) {
-				lf_expr->nodes.options = node->options;
+				*defoptions = node->options;
 				free_logformat_node(node);
 			} else {
 				LIST_APPEND(list_format, &node->list);
@@ -510,7 +510,7 @@ int add_to_logformat_list(char *start, char *end, int type, struct lf_expr *lf_e
  */
 static int add_sample_to_logformat_list(char *text, char *name, int name_len, int typecast,
                                         char *arg, int arg_len, struct lf_expr *lf_expr,
-                                        struct arg_list *al, int cap, char **err, char **endptr)
+                                        struct arg_list *al, int options, int cap, char **err, char **endptr)
 {
 	char *cmd[2];
 	struct list *list_format = &lf_expr->nodes.list;
@@ -539,7 +539,7 @@ static int add_sample_to_logformat_list(char *text, char *name, int name_len, in
 	node->type = LOG_FMT_EXPR;
 	node->typecast = typecast;
 	node->expr = expr;
-	node->options = lf_expr->nodes.options;
+	node->options = options;
 
 	if (arg_len) {
 		node->arg = my_strndup(arg, arg_len);
@@ -558,7 +558,7 @@ static int add_sample_to_logformat_list(char *text, char *name, int name_len, in
 		goto error_free;
 	}
 
-	if ((lf_expr->nodes.options & LOG_OPT_HTTP) && (expr->fetch->use & (SMP_USE_L6REQ|SMP_USE_L6RES))) {
+	if ((options & LOG_OPT_HTTP) && (expr->fetch->use & (SMP_USE_L6REQ|SMP_USE_L6RES))) {
 		ha_warning("parsing [%s:%d] : L6 sample fetch <%s> ignored in HTTP log-format string.\n",
 			   lf_expr->conf.file, lf_expr->conf.line, text);
 	}
@@ -620,7 +620,6 @@ int lf_expr_compile(struct lf_expr *lf_expr,
 	 * returning.
 	 */
 	LIST_INIT(&lf_expr->nodes.list);
-	lf_expr->nodes.options = options;
 	/* we must set the compiled flag now for proper deinit in case of failure */
 	lf_expr->flags |= LF_FL_COMPILED;
 
@@ -737,7 +736,7 @@ int lf_expr_compile(struct lf_expr *lf_expr,
 			 * part of the expression, which MUST be the trailing
 			 * angle bracket.
 			 */
-			if (!add_sample_to_logformat_list(tag, name, name_len, typecast, arg, arg_len, lf_expr, al, cap, err, &str))
+			if (!add_sample_to_logformat_list(tag, name, name_len, typecast, arg, arg_len, lf_expr, al, options, cap, err, &str))
 				goto fail;
 
 			if (*str == ']') {
@@ -783,7 +782,7 @@ int lf_expr_compile(struct lf_expr *lf_expr,
 		if (cformat != pformat || pformat == LF_SEPARATOR) {
 			switch (pformat) {
 			case LF_TAG:
-				if (!parse_logformat_tag(arg, arg_len, name, name_len, typecast, tag, tag_len, lf_expr, err))
+				if (!parse_logformat_tag(arg, arg_len, name, name_len, typecast, tag, tag_len, lf_expr, &options, err))
 					goto fail;
 				break;
 			case LF_TEXT:
@@ -886,6 +885,11 @@ int lf_expr_postcheck(struct lf_expr *lf_expr, struct proxy *px, char **err)
 	if (!(px->flags & PR_FL_CHECKED))
 		px->to_log |= LW_INIT;
 
+	/* start with all options, then perform ANDmask with each node's
+	 * options to end with options common to ALL nodes
+	 */
+	lf_expr->nodes.options = ~LOG_OPT_NONE;
+
 	list_for_each_entry(lf, &lf_expr->nodes.list, list) {
 		if (lf->type == LOG_FMT_EXPR) {
 			struct sample_expr *expr = lf->expr;
@@ -898,7 +902,7 @@ int lf_expr_postcheck(struct lf_expr *lf_expr, struct proxy *px, char **err)
 					          expr->fetch->kw);
 					goto fail;
 				}
-				continue;
+				goto next_node;
 			}
 			/* check if we need to allocate an http_txn struct for HTTP parsing */
 			/* Note, we may also need to set curpx->to_log with certain fetches */
@@ -926,6 +930,14 @@ int lf_expr_postcheck(struct lf_expr *lf_expr, struct proxy *px, char **err)
 			}
 			if (!(px->flags & PR_FL_CHECKED))
 				px->to_log |= lf->tag->lw;
+		}
+ next_node:
+		if (LF_NODE_WITH_OPT(lf)) {
+			/* For configurable nodes, apply current node's option
+			 * mask to global node options to keep options common
+			 * to all nodes
+			 */
+			lf_expr->nodes.options &= lf->options;
 		}
 	}
 	if ((px->to_log & (LW_REQ | LW_RESP)) &&
@@ -1768,13 +1780,19 @@ static char *_encode_byte_hex(char *start, char *stop, unsigned char byte)
  *
  * for now only hex form is supported.
  *
+ * The function may only be called under CBOR context (that is when
+ * LOG_OPT_ENCODE_CBOR option is set).
+ *
  * Returns the position of the last written byte on success and NULL on
  * error.
  */
 static char *_lf_cbor_encode_byte(struct cbor_encode_ctx *cbor_ctx,
                                   char *start, char *stop, unsigned char byte)
 {
-	struct lf_buildctx *ctx = cbor_ctx->e_byte_fct_ctx;
+	struct lf_buildctx *ctx;
+
+	BUG_ON(!cbor_ctx);
+	ctx = cbor_ctx->e_fct_ctx;
 
 	if (ctx->options & LOG_OPT_BIN) {
 		/* raw output */
@@ -1825,8 +1843,8 @@ static inline void lf_buildctx_prepare(struct lf_buildctx *ctx,
 
 		if (ctx->options & LOG_OPT_ENCODE_CBOR) {
 			/* prepare cbor-specific encode ctx */
-			ctx->encode.cbor.e_byte_fct = _lf_cbor_encode_byte;
-			ctx->encode.cbor.e_byte_fct_ctx = ctx;
+			ctx->encode.cbor.e_fct_byte = _lf_cbor_encode_byte;
+			ctx->encode.cbor.e_fct_ctx = ctx;
 		}
 	}
 }
@@ -3624,7 +3642,7 @@ int sess_build_logline(struct session *sess, struct stream *s, char *dst, size_t
 			/* types that cannot be named such as text or separator are ignored
 			 * when encoding is set
 			 */
-			if (tmp->type != LOG_FMT_EXPR && tmp->type != LOG_FMT_TAG)
+			if (!LF_NODE_WITH_OPT(tmp))
 				goto next_fmt;
 
 			if (!tmp->name)
