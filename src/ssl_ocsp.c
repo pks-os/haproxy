@@ -33,13 +33,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <netdb.h>
-#include <netinet/tcp.h>
-
-#include <import/ebpttree.h>
 #include <import/ebsttree.h>
 #include <import/lru.h>
 
@@ -48,44 +41,26 @@
 #include <haproxy/arg.h>
 #include <haproxy/base64.h>
 #include <haproxy/cfgparse.h>
-#include <haproxy/channel.h>
 #include <haproxy/chunk.h>
 #include <haproxy/cli.h>
 #include <haproxy/connection.h>
-#include <haproxy/dynbuf.h>
 #include <haproxy/errors.h>
-#include <haproxy/fd.h>
 #include <haproxy/freq_ctr.h>
 #include <haproxy/frontend.h>
 #include <haproxy/global.h>
-#include <haproxy/http_rules.h>
+#include <haproxy/http_client.h>
+#include <haproxy/istbuf.h>
 #include <haproxy/log.h>
 #include <haproxy/openssl-compat.h>
-#include <haproxy/pattern-t.h>
-#include <haproxy/proto_tcp.h>
 #include <haproxy/proxy.h>
-#include <haproxy/sample.h>
-#include <haproxy/sc_strm.h>
-#include <haproxy/quic_conn.h>
-#include <haproxy/quic_tp.h>
-#include <haproxy/server.h>
 #include <haproxy/shctx.h>
 #include <haproxy/ssl_ckch.h>
-#include <haproxy/ssl_crtlist.h>
+#include <haproxy/ssl_ocsp-t.h>
 #include <haproxy/ssl_sock.h>
 #include <haproxy/ssl_utils.h>
-#include <haproxy/stats.h>
-#include <haproxy/stconn.h>
-#include <haproxy/stream-t.h>
 #include <haproxy/task.h>
 #include <haproxy/ticks.h>
 #include <haproxy/time.h>
-#include <haproxy/tools.h>
-#include <haproxy/vars.h>
-#include <haproxy/xxhash.h>
-#include <haproxy/istbuf.h>
-#include <haproxy/ssl_ocsp-t.h>
-#include <haproxy/http_client.h>
 
 
 /* ***** READ THIS before adding code here! *****
@@ -1919,6 +1894,90 @@ static void cli_release_show_ocsp_updates(struct appctx *appctx)
 	HA_SPIN_UNLOCK(OCSP_LOCK, &ocsp_tree_lock);
 }
 
+static int ssl_parse_global_ocsp_maxdelay(char **args, int section_type, struct proxy *curpx,
+                                          const struct proxy *defpx, const char *file, int line,
+                                          char **err)
+{
+	int value = 0;
+
+	if (*(args[1]) == 0) {
+		memprintf(err, "'%s' expects an integer argument.", args[0]);
+		return -1;
+	}
+
+	value = atoi(args[1]);
+	if (value < 0) {
+		memprintf(err, "'%s' expects a positive numeric value.", args[0]);
+		return -1;
+	}
+
+	if (global_ssl.ocsp_update.delay_min > value) {
+		memprintf(err, "'%s' can not be lower than tune.ssl.ocsp-update.mindelay.", args[0]);
+		return -1;
+	}
+
+	global_ssl.ocsp_update.delay_max = value;
+
+	return 0;
+}
+
+static int ssl_parse_global_ocsp_mindelay(char **args, int section_type, struct proxy *curpx,
+                                          const struct proxy *defpx, const char *file, int line,
+                                          char **err)
+{
+	int value = 0;
+
+	if (*(args[1]) == 0) {
+		memprintf(err, "'%s' expects an integer argument.", args[0]);
+		return -1;
+	}
+
+	value = atoi(args[1]);
+	if (value < 0) {
+		memprintf(err, "'%s' expects a positive numeric value.", args[0]);
+		return -1;
+	}
+
+	if (value > global_ssl.ocsp_update.delay_max) {
+		memprintf(err, "'%s' can not be higher than tune.ssl.ocsp-update.maxdelay.", args[0]);
+		return -1;
+	}
+
+	global_ssl.ocsp_update.delay_min = value;
+
+	return 0;
+}
+
+static int ssl_parse_global_ocsp_update_mode(char **args, int section_type, struct proxy *curpx,
+                                             const struct proxy *defpx, const char *file, int line,
+                                             char **err)
+{
+	int ret = 0;
+
+	if (!*args[1]) {
+		memprintf(err, "'%s' : expecting <on|off>", args[0]);
+		return ERR_ALERT | ERR_FATAL;
+	}
+
+	if (strcmp(args[1], "on") == 0)
+		global_ssl.ocsp_update.mode = SSL_SOCK_OCSP_UPDATE_ON;
+	else if (strcmp(args[1], "off") == 0)
+		global_ssl.ocsp_update.mode = SSL_SOCK_OCSP_UPDATE_OFF;
+	else {
+		memprintf(err, "'%s' : expecting <on|off>", args[0]);
+		return ERR_ALERT | ERR_FATAL;
+	}
+
+	if (global_ssl.ocsp_update.mode != SSL_SOCK_OCSP_UPDATE_OFF) {
+		/* We might need to create the main ocsp update task */
+		ret = ssl_create_ocsp_update_task(err);
+	}
+
+	return ret;
+}
+
+
+
 static int ocsp_update_parse_global_http_proxy(char **args, int section_type, struct proxy *curpx,
                                         const struct proxy *defpx, const char *file, int line,
                                         char **err)
@@ -1962,7 +2021,12 @@ static struct cli_kw_list cli_kws = {{ },{
 INITCALL1(STG_REGISTER, cli_register_kw, &cli_kws);
 
 static struct cfg_kw_list cfg_kws = {ILH, {
-	{ CFG_GLOBAL, "ocsp_update.http_proxy", ocsp_update_parse_global_http_proxy },
+#ifndef OPENSSL_NO_OCSP
+	{ CFG_GLOBAL, "tune.ssl.ocsp-update.maxdelay", ssl_parse_global_ocsp_maxdelay },
+	{ CFG_GLOBAL, "tune.ssl.ocsp-update.mindelay", ssl_parse_global_ocsp_mindelay },
+	{ CFG_GLOBAL, "tune.ssl.ocsp-update.mode", ssl_parse_global_ocsp_update_mode },
+	{ CFG_GLOBAL, "ocsp-update.httpproxy", ocsp_update_parse_global_http_proxy },
+#endif
 	{ 0, NULL, NULL },
 }};
 

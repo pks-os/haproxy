@@ -10,6 +10,7 @@
 #include <haproxy/api.h>
 #include <haproxy/buf.h>
 #include <haproxy/chunk.h>
+#include <haproxy/clock.h>
 #include <haproxy/errors.h>
 #include <haproxy/global.h>
 #include <haproxy/guid.h>
@@ -20,6 +21,7 @@
 #include <haproxy/proxy-t.h>
 #include <haproxy/server-t.h>
 #include <haproxy/stats.h>
+#include <haproxy/time.h>
 
 /* Dump all fields from <stats> into <out> for stats-file. */
 int stats_dump_fields_file(struct buffer *out,
@@ -85,16 +87,20 @@ void stats_dump_file_header(int type, struct buffer *out)
 		chunk_strcat(out, "#fe guid,");
 		for (i = 0; i < ST_I_PX_MAX; ++i) {
 			col = &stat_cols_px[i];
-			if (stcol_nature(col) == FN_COUNTER && (col->cap & (STATS_PX_CAP_FE|STATS_PX_CAP_LI)))
+			if (stcol_is_generic(col) &&
+			    col->cap & (STATS_PX_CAP_FE|STATS_PX_CAP_LI)) {
 				chunk_appendf(out, "%s,", col->name);
+			}
 		}
 	}
 	else {
 		chunk_appendf(out, "#be guid,");
 		for (i = 0; i < ST_I_PX_MAX; ++i) {
 			col = &stat_cols_px[i];
-			if (stcol_nature(col) == FN_COUNTER && (col->cap & (STATS_PX_CAP_BE|STATS_PX_CAP_SRV)))
+			if (stcol_is_generic(col) &&
+			    col->cap & (STATS_PX_CAP_BE|STATS_PX_CAP_SRV)) {
 				chunk_appendf(out, "%s,", col->name);
+			}
 		}
 	}
 
@@ -189,6 +195,55 @@ static int parse_header_line(struct ist header, struct eb_root *st_tree,
 	return 1;
 }
 
+/* Preload an individual counter instance stored at <counter> with <token>
+ * value> for the <col> stat column.
+ *
+ * Returns 0 on success else non-zero if counter was not updated.
+ */
+static int load_ctr(const struct stat_col *col, const struct ist token,
+                    void* counter)
+{
+	const enum field_nature fn = stcol_nature(col);
+	const enum field_format ff = stcol_format(col);
+	const char *ptr = istptr(token);
+	struct field value;
+
+	switch (ff) {
+	case FF_U64:
+		value.u.u64 = read_uint64(&ptr, istend(token));
+		break;
+
+	case FF_S32:
+	case FF_U32:
+		value.u.u32 = read_uint(&ptr, istend(token));
+		break;
+
+	default:
+		/* Unsupported field nature. */
+		return 1;
+	}
+
+	/* Do not load value if non numeric characters present. */
+	if (ptr != istend(token))
+		return 1;
+
+	if (fn == FN_COUNTER && ff == FF_U64) {
+		*(uint64_t *)counter = value.u.u64;
+	}
+	else if (fn == FN_RATE && ff == FF_U32) {
+		preload_freq_ctr(counter, value.u.u32);
+	}
+	else if (fn == FN_AGE && (ff == FF_U32 || ff == FF_S32)) {
+		*(uint32_t *)counter = ns_to_sec(now_ns) - value.u.u32;
+	}
+	else {
+		/* Unsupported field format/nature combination. */
+		return 1;
+	}
+
+	return 0;
+}
+
 /* Parse a non header stats-file line <line>. Specify current parsing <domain>
  * and <cols> stats column matrix derived from the last header line.
  *
@@ -269,7 +324,6 @@ static int parse_stat_line(struct ist line,
 	i = 0;
 	while (istlen(line) && i < STAT_FILE_MAX_COL_COUNT) {
 		const struct stat_col *col = cols[i++];
-		enum field_format ff;
 
 		token = istsplit(&line, ',');
 		if (!istlen(token))
@@ -278,19 +332,7 @@ static int parse_stat_line(struct ist line,
 		if (!col)
 			continue;
 
-		ff = stcol_format(col);
-		if (ff == FF_U64) {
-			uint64_t *offset, value;
-			const char *ptr;
-
-			ptr = istptr(token);
-			value = read_uint64(&ptr, istend(token));
-			/* Do not load value if non numeric characters present. */
-			if (ptr == istend(token)) {
-				offset = (uint64_t *)(base_off + col->metric.offset[off]);
-				*offset = value;
-			}
-		}
+		load_ctr(col, token, base_off + col->metric.offset[off]);
 	}
 
 	return 0;
