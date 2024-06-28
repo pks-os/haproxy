@@ -105,11 +105,9 @@ enum {
 };
 
 /* bind ocsp update mode */
-enum {
-	SSL_SOCK_OCSP_UPDATE_DFLT     = 0,
-	SSL_SOCK_OCSP_UPDATE_OFF      = 1,
-	SSL_SOCK_OCSP_UPDATE_ON       = 2,
-};
+#define	SSL_SOCK_OCSP_UPDATE_OFF   -1
+#define	SSL_SOCK_OCSP_UPDATE_DFLT   0
+#define	SSL_SOCK_OCSP_UPDATE_ON     1
 
 /* states of the CLI IO handler for 'set ssl cert' */
 enum {
@@ -311,6 +309,7 @@ struct global_ssl {
 		unsigned int delay_max;
 		unsigned int delay_min;
 		int mode; /* default mode used for ocsp auto-update (off, on) */
+		int disable;
 	} ocsp_update;
 #endif
 };
@@ -321,6 +320,8 @@ struct global_ssl {
 extern const char *SSL_SOCK_KEYTYPE_NAMES[];
 
 #define SSL_SOCK_NUM_KEYTYPES 3
+
+extern struct pool_head *ssl_sock_client_sni_pool;
 
 #endif /* USE_OPENSSL */
 #endif /* _HAPROXY_SSL_SOCK_T_H */

@@ -130,9 +130,7 @@ void stksess_free(struct stktable *t, struct stksess *ts)
 	/* make the compiler happy when shard is not used without threads */
 	ALREADY_CHECKED(shard);
 
-	HA_RWLOCK_RDLOCK(STK_TABLE_LOCK, &t->shards[shard].sh_lock);
 	__stksess_free(t, ts);
-	HA_RWLOCK_RDUNLOCK(STK_TABLE_LOCK, &t->shards[shard].sh_lock);
 }
 
 /*
@@ -141,33 +139,41 @@ void stksess_free(struct stktable *t, struct stksess *ts)
  */
 int __stksess_kill(struct stktable *t, struct stksess *ts)
 {
+	int updt_locked = 0;
+
 	if (HA_ATOMIC_LOAD(&ts->ref_cnt))
 		return 0;
 
-	eb32_delete(&ts->exp);
 	if (ts->upd.node.leaf_p) {
+		updt_locked = 1;
 		HA_RWLOCK_WRLOCK(STK_TABLE_LOCK, &t->updt_lock);
-		eb32_delete(&ts->upd);
-		HA_RWLOCK_WRUNLOCK(STK_TABLE_LOCK, &t->updt_lock);
+		if (HA_ATOMIC_LOAD(&ts->ref_cnt))
+			goto out_unlock;
 	}
+	eb32_delete(&ts->exp);
+	eb32_delete(&ts->upd);
 	ebmb_delete(&ts->key);
 	__stksess_free(t, ts);
+
+  out_unlock:
+	if (updt_locked)
+		HA_RWLOCK_WRUNLOCK(STK_TABLE_LOCK, &t->updt_lock);
 	return 1;
 }
 
 /*
- * Decrease the refcount if decrefcnt is not 0, and try to kill the stksess.
+ * Decrease the refcount of a stksess and relase it if the refcount falls to 0.
  * Returns non-zero if deleted, zero otherwise.
- * This function locks the table
+ *
+ * This function locks the corresponding table shard to proceed. When this
+ * function is called, the caller must be sure it owns a reference on the
+ * stksess (refcount >= 1).
  */
-int stksess_kill(struct stktable *t, struct stksess *ts, int decrefcnt)
+int stksess_kill(struct stktable *t, struct stksess *ts)
 {
 	uint shard;
 	size_t len;
-	int ret;
-
-	if (decrefcnt && HA_ATOMIC_SUB_FETCH(&ts->ref_cnt, 1) != 0)
-		return 0;
+	int ret = 0;
 
 	if (t->type == SMP_T_STR)
 		len = strlen((const char *)ts->key.key);
@@ -180,7 +186,8 @@ int stksess_kill(struct stktable *t, struct stksess *ts, int decrefcnt)
 	ALREADY_CHECKED(shard);
 
 	HA_RWLOCK_WRLOCK(STK_TABLE_LOCK, &t->shards[shard].sh_lock);
-	ret = __stksess_kill(t, ts);
+	if (!HA_ATOMIC_SUB_FETCH(&ts->ref_cnt, 1))
+		ret = __stksess_kill(t, ts);
 	HA_RWLOCK_WRUNLOCK(STK_TABLE_LOCK, &t->shards[shard].sh_lock);
 
 	return ret;
@@ -264,6 +271,7 @@ int stktable_trash_oldest(struct stktable *t, int to_batch)
 	int max_per_shard = (to_batch + CONFIG_HAP_TBL_BUCKETS - 1) / CONFIG_HAP_TBL_BUCKETS;
 	int done_per_shard;
 	int batched = 0;
+	int updt_locked;
 	int looped;
 	int shard;
 
@@ -272,6 +280,7 @@ int stktable_trash_oldest(struct stktable *t, int to_batch)
 	while (batched < to_batch) {
 		done_per_shard = 0;
 		looped = 0;
+		updt_locked = 0;
 
 		HA_RWLOCK_WRLOCK(STK_TABLE_LOCK, &t->shards[shard].sh_lock);
 
@@ -328,17 +337,34 @@ int stktable_trash_oldest(struct stktable *t, int to_batch)
 				continue;
 			}
 
+			/* if the entry is in the update list, we must be extremely careful
+			 * because peers can see it at any moment and start to use it. Peers
+			 * will take the table's updt_lock for reading when doing that, and
+			 * with that lock held, will grab a ref_cnt before releasing the
+			 * lock. So we must take this lock as well and check the ref_cnt.
+			 */
+			if (ts->upd.node.leaf_p) {
+				if (!updt_locked) {
+					updt_locked = 1;
+					HA_RWLOCK_WRLOCK(STK_TABLE_LOCK, &t->updt_lock);
+				}
+				/* now we're locked, new peers can't grab it anymore,
+				 * existing ones already have the ref_cnt.
+				 */
+				if (HA_ATOMIC_LOAD(&ts->ref_cnt))
+					continue;
+			}
+
 			/* session expired, trash it */
 			ebmb_delete(&ts->key);
-			if (ts->upd.node.leaf_p) {
-				HA_RWLOCK_WRLOCK(STK_TABLE_LOCK, &t->updt_lock);
-				eb32_delete(&ts->upd);
-				HA_RWLOCK_WRUNLOCK(STK_TABLE_LOCK, &t->updt_lock);
-			}
+			eb32_delete(&ts->upd);
 			__stksess_free(t, ts);
 			batched++;
 			done_per_shard++;
 		}
+
+		if (updt_locked)
+			HA_RWLOCK_WRUNLOCK(STK_TABLE_LOCK, &t->updt_lock);
 
 		HA_RWLOCK_WRUNLOCK(STK_TABLE_LOCK, &t->shards[shard].sh_lock);
 
@@ -545,25 +571,14 @@ void stktable_touch_with_exp(struct stktable *t, struct stksess *ts, int local, 
 
 	/* If sync is enabled */
 	if (t->sync_task) {
-		/* We'll need to reliably check that the entry is in the tree.
-		 * It's only inserted/deleted using a write lock so a read lock
-		 * is sufficient to verify this. We may then need to upgrade it
-		 * to perform an update (which is rare under load), and if the
-		 * upgrade fails, we'll try again with a write lock directly.
-		 */
-		if (use_wrlock)
-			HA_RWLOCK_WRLOCK(STK_TABLE_LOCK, &t->updt_lock);
-
 		if (local) {
 			/* Check if this entry is not in the tree or not
 			 * scheduled for at least one peer.
 			 */
 			if (!ts->upd.node.leaf_p || _HA_ATOMIC_LOAD(&ts->seen)) {
-				/* Time to upgrade the read lock to write lock if needed */
-				if (!use_wrlock) {
-					HA_RWLOCK_WRLOCK(STK_TABLE_LOCK, &t->updt_lock);
-					use_wrlock = 1;
-				}
+				/* Time to upgrade the read lock to write lock */
+				HA_RWLOCK_WRLOCK(STK_TABLE_LOCK, &t->updt_lock);
+				use_wrlock = 1;
 
 				/* here we're write-locked */
 
@@ -580,23 +595,30 @@ void stktable_touch_with_exp(struct stktable *t, struct stksess *ts, int local, 
 			do_wakeup = 1;
 		}
 		else {
-			/* If this entry is not in the tree */
-
+			/* Note: we land here when learning new entries from
+			 * remote peers. We hold one ref_cnt so the entry
+			 * cannot vanish under us, however if two peers create
+			 * the same key at the exact same time, we must be
+			 * careful not to perform two parallel inserts! Hence
+			 * we need to first check leaf_p to know if the entry
+			 * is new, then lock the tree and check the entry again
+			 * (since another thread could have created it in the
+			 * mean time).
+			 */
 			if (!ts->upd.node.leaf_p) {
 				/* Time to upgrade the read lock to write lock if needed */
-				if (!use_wrlock) {
-					HA_RWLOCK_WRLOCK(STK_TABLE_LOCK, &t->updt_lock);
-					use_wrlock = 1;
-				}
+				HA_RWLOCK_WRLOCK(STK_TABLE_LOCK, &t->updt_lock);
+				use_wrlock = 1;
 
 				/* here we're write-locked */
-
-				ts->seen = 0;
-				ts->upd.key= (++t->update)+(2147483648U);
-				eb = eb32_insert(&t->updates, &ts->upd);
-				if (eb != &ts->upd) {
-					eb32_delete(eb);
-					eb32_insert(&t->updates, &ts->upd);
+				if (!ts->upd.node.leaf_p) {
+					ts->seen = 0;
+					ts->upd.key= (++t->update)+(2147483648U);
+					eb = eb32_insert(&t->updates, &ts->upd);
+					if (eb != &ts->upd) {
+						eb32_delete(eb);
+						eb32_insert(&t->updates, &ts->upd);
+					}
 				}
 			}
 		}
@@ -5249,7 +5271,7 @@ static int table_process_entry(struct appctx *appctx, struct stksess *ts, char *
 		break;
 
 	case STK_CLI_ACT_CLR:
-		if (!stksess_kill(t, ts, 1)) {
+		if (!stksess_kill(t, ts)) {
 			/* don't delete an entry which is currently referenced */
 			return cli_err(appctx, "Entry currently in use, cannot remove\n");
 		}
@@ -5576,6 +5598,10 @@ static int cli_io_handler_table(struct appctx *appctx)
 					ptr = stktable_data_ptr(ctx->t,
 								ctx->entry,
 								dt);
+					/* table_prepare_data_request() normally ensures the
+					 * type is both valid and stored
+					 */
+					BUG_ON(!ptr);
 
 					data = 0;
 					switch (stktable_data_types[dt].std_type) {
@@ -5662,7 +5688,7 @@ static void cli_release_show_table(struct appctx *appctx)
 	struct show_table_ctx *ctx = appctx->svcctx;
 
 	if (ctx->state == STATE_DUMP) {
-		stksess_kill_if_expired(ctx->t, ctx->entry, 1);
+		stksess_kill_if_expired(ctx->t, ctx->entry);
 	}
 }
 

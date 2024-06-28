@@ -563,6 +563,8 @@ static int ssl_parse_global_dh_param_file(char **args, int section_type, struct 
 	return 0;
 }
 
+#endif
+
 /* parse "ssl.default-dh-param".
  * Returns <0 on alert, >0 on warning, 0 on success.
  */
@@ -570,6 +572,8 @@ static int ssl_parse_global_default_dh(char **args, int section_type, struct pro
                                        const struct proxy *defpx, const char *file, int line,
                                        char **err)
 {
+#ifndef OPENSSL_NO_DH
+
 	if (too_many_args(1, args, err, NULL))
 		return -1;
 
@@ -584,8 +588,12 @@ static int ssl_parse_global_default_dh(char **args, int section_type, struct pro
 		return -1;
 	}
 	return 0;
-}
+#else
+	memprintf(err, "'%s' is not supported by %s, keyword ignored", args[0], OpenSSL_version(OPENSSL_VERSION));
+	return ERR_WARN;
 #endif
+
+}
 
 
 /*
@@ -1473,35 +1481,6 @@ static int bind_parse_no_ca_names(char **args, int cur_arg, struct proxy *px, st
 	return ssl_bind_parse_no_ca_names(args, cur_arg, px, &conf->ssl_conf, 0, err);
 }
 
-
-static int ssl_bind_parse_ocsp_update(char **args, int cur_arg, struct proxy *px,
-                                      struct ssl_bind_conf *ssl_conf, int from_cli, char **err)
-{
-	if (!*args[cur_arg + 1]) {
-		memprintf(err, "'%s' : expecting <on|off>", args[cur_arg]);
-		return ERR_ALERT | ERR_FATAL;
-	}
-
-	if (strcmp(args[cur_arg + 1], "on") == 0)
-		ssl_conf->ocsp_update = SSL_SOCK_OCSP_UPDATE_ON;
-	else if (strcmp(args[cur_arg + 1], "off") == 0)
-		ssl_conf->ocsp_update = SSL_SOCK_OCSP_UPDATE_OFF;
-	else {
-		memprintf(err, "'%s' : expecting <on|off>", args[cur_arg]);
-		return ERR_ALERT | ERR_FATAL;
-	}
-
-	if (ssl_conf->ocsp_update == SSL_SOCK_OCSP_UPDATE_ON) {
-		/* We might need to create the main ocsp update task */
-		int ret = ssl_create_ocsp_update_task(err);
-		if (ret)
-			return ret;
-	}
-
-	return 0;
-}
-
-
 /***************************** "server" keywords Parsing ********************************************/
 
 /* parse the "npn" bind keyword */
@@ -2186,7 +2165,12 @@ static int ssl_parse_skip_self_issued_ca(char **args, int section_type, struct p
  */
 
 /* the <ssl_crtlist_kws> keywords are used for crt-list parsing, they *MUST* be safe
- * with their proxy argument NULL and must only fill the ssl_bind_conf */
+ * with their proxy argument NULL and must only fill the ssl_bind_conf
+ *
+ * /!\ Please update configuration.txt at the crt-list option of the Bind options
+ * section when adding a keyword in ssl_crtlist_kws. /!\
+ *
+ */
 struct ssl_crtlist_kw ssl_crtlist_kws[] = {
 	{ "allow-0rtt",            ssl_bind_parse_allow_0rtt,       0 }, /* allow 0-RTT */
 	{ "alpn",                  ssl_bind_parse_alpn,             1 }, /* set ALPN supported protocols */
@@ -2205,7 +2189,6 @@ struct ssl_crtlist_kw ssl_crtlist_kws[] = {
 	{ "ssl-min-ver",           ssl_bind_parse_tls_method_minmax,1 }, /* minimum version */
 	{ "ssl-max-ver",           ssl_bind_parse_tls_method_minmax,1 }, /* maximum version */
 	{ "verify",                ssl_bind_parse_verify,           1 }, /* set SSL verify method */
-	{ "ocsp-update",           ssl_bind_parse_ocsp_update,      1 }, /* ocsp update mode (on or off) */
 	{ NULL, NULL, 0 },
 };
 
@@ -2333,9 +2316,7 @@ static struct cfg_kw_list cfg_kws = {ILH, {
 	{ CFG_GLOBAL, "ssl-security-level", ssl_parse_security_level },
 	{ CFG_GLOBAL, "ssl-skip-self-issued-ca", ssl_parse_skip_self_issued_ca },
 	{ CFG_GLOBAL, "tune.ssl.cachesize", ssl_parse_global_int },
-#ifndef OPENSSL_NO_DH
 	{ CFG_GLOBAL, "tune.ssl.default-dh-param", ssl_parse_global_default_dh },
-#endif
 	{ CFG_GLOBAL, "tune.ssl.force-private-cache",  ssl_parse_global_private_cache },
 	{ CFG_GLOBAL, "tune.ssl.lifetime", ssl_parse_global_lifetime },
 	{ CFG_GLOBAL, "tune.ssl.maxrecord", ssl_parse_global_int },

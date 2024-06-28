@@ -284,7 +284,7 @@ int httpclient_req_gen(struct httpclient *hc, const struct ist url, enum http_me
 	if (!(hc->flags & HC_F_HTTPPROXY))
 		flags |= HTX_SL_F_NORMALIZED_URI;
 
-	if (!b_alloc(&hc->req.buf))
+	if (!b_alloc(&hc->req.buf, DB_CHANNEL))
 		goto error;
 
 	if (meth >= HTTP_METH_OTHER)
@@ -402,7 +402,7 @@ int httpclient_req_xfer(struct httpclient *hc, struct ist src, int end)
 	int ret = 0;
 	struct htx *htx;
 
-	if (!b_alloc(&hc->req.buf))
+	if (!b_alloc(&hc->req.buf, DB_CHANNEL))
 		goto error;
 
 	htx = htx_from_buf(&hc->req.buf);
@@ -917,7 +917,7 @@ void httpclient_applet_io_handler(struct appctx *appctx)
 				if (htx_is_empty(htx))
 					goto out;
 
-				if (!b_alloc(&hc->res.buf))
+				if (!b_alloc(&hc->res.buf, DB_MUX_TX))
 					goto out;
 
 				if (b_full(&hc->res.buf))
@@ -1389,9 +1389,22 @@ static int httpclient_postcheck_proxy(struct proxy *curproxy)
 		/* init the SNI expression */
 		/* always use the host header as SNI, without the port */
 		srv_ssl->sni_expr = strdup("req.hdr(host),field(1,:)");
-		err_code |= server_parse_sni_expr(srv_ssl, curproxy, &errmsg);
-		if (err_code & ERR_CODE) {
-			memprintf(&errmsg, "failed to configure sni: %s.", errmsg);
+		srv_ssl->ssl_ctx.sni = _parse_srv_expr(srv_ssl->sni_expr,
+		                                       &curproxy->conf.args,
+		                                       NULL, 0, NULL);
+		if (!srv_ssl->ssl_ctx.sni) {
+			memprintf(&errmsg, "failed to configure sni.");
+			err_code |= ERR_ALERT | ERR_FATAL;
+			goto err;
+		}
+
+		srv_ssl->pool_conn_name = strdup(srv_ssl->sni_expr);
+		srv_ssl->pool_conn_name_expr = _parse_srv_expr(srv_ssl->pool_conn_name,
+		                                               &curproxy->conf.args,
+		                                               NULL, 0, NULL);
+		if (!srv_ssl->pool_conn_name_expr) {
+			memprintf(&errmsg, "failed to configure pool-conn-name.");
+			err_code |= ERR_ALERT | ERR_FATAL;
 			goto err;
 		}
 	}

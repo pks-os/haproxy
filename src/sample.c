@@ -4795,7 +4795,7 @@ static int smp_check_uuid(struct arg *args, char **err)
 	return 1;
 }
 
-// Generate a RFC4122 UUID (default is v4 = fully random)
+// Generate a RFC 9562 UUID (default is v4 = fully random)
 static int smp_fetch_uuid(const struct arg *args, struct sample *smp, const char *kw, void *private)
 {
 	long long int type = -1;
@@ -4822,6 +4822,16 @@ static int smp_fetch_uuid(const struct arg *args, struct sample *smp, const char
 	smp->data.u.str = trash;
 	return 1;
 }
+
+/* returns the uptime in seconds */
+static int
+smp_fetch_uptime(const struct arg *args, struct sample *smp, const char *kw, void *private)
+{
+	smp->data.type = SMP_T_SINT;
+	smp->data.u.sint = ns_to_sec(now_ns - start_time_ns);
+	return 1;
+}
+
 
 /* Check if QUIC support was compiled and was not disabled by "no-quic" global option */
 static int smp_fetch_quic_enabled(const struct arg *args, struct sample *smp, const char *kw, void *private)
@@ -5123,6 +5133,7 @@ static struct sample_fetch_kw_list smp_kws = {ILH, {
 	{ "thread",       smp_fetch_thread,  0,          NULL, SMP_T_SINT, SMP_USE_CONST },
 	{ "rand",         smp_fetch_rand,  ARG1(0,SINT), NULL, SMP_T_SINT, SMP_USE_CONST },
 	{ "stopping",     smp_fetch_stopping, 0,         NULL, SMP_T_BOOL, SMP_USE_INTRN },
+	{ "uptime",       smp_fetch_uptime,   0,         NULL, SMP_T_SINT, SMP_USE_CONST },
 	{ "uuid",         smp_fetch_uuid,  ARG1(0, SINT),      smp_check_uuid, SMP_T_STR, SMP_USE_CONST },
 
 	{ "cpu_calls",    smp_fetch_cpu_calls,  0,       NULL, SMP_T_SINT, SMP_USE_INTRN },

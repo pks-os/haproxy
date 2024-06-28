@@ -1,6 +1,347 @@
 ChangeLog :
 ===========
 
+2024/06/14 : 3.1-dev1
+    - REGTESTS: Remove REQUIRE_VERSION=2.1 from all tests
+    - REGTESTS: Remove REQUIRE_VERSION=2.2 from all tests
+    - CI: use "--no-install-recommends" for apt-get
+    - CI: switch to lua 5.4
+    - CI: use USE_PCRE2 instead of USE_PCRE
+    - DOC: replace the README by a markdown version
+    - CI: VTest: accelerate package install a bit
+    - ADMIN: acme.sh: remove the old acme.sh code
+    - BUG/MINOR: cfgparse: remove the correct option on httpcheck send-state warning
+    - BUG/MINOR: tcpcheck: report correct error in tcp-check rule parser
+    - BUG/MINOR: tools: fix possible null-deref in env_expand() on out-of-memory
+    - DOC: configuration: add an example for keywords from crt-store
+    - CI: speedup apt package install
+    - DOC: add the FreeBSD status badge to README.md
+    - DOC: change the link to the FreeBSD CI in README.md
+    - MINOR: stktable: avoid ambiguous stktable_data_ptr() usage in cli_io_handler_table()
+    - BUG/MINOR: hlua: use CertCache.set() from various hlua contexts
+    - CLEANUP: hlua: fix CertCache class comment
+    - CI: FreeBSD: upgrade image, packages
+    - BUG/MEDIUM: h1-htx: Don't state interim responses are bodyless
+    - MEDIUM: stconn: Be able to unblock zero-copy data forwarding from done_fastfwd
+    - BUG/MEDIUM: mux-quic: Unblock zero-copy forwarding if the txbuf can be released
+    - BUG/MINOR: quic: prevent crash on qc_kill_conn()
+    - CLEANUP: hlua: use hlua_pusherror() where relevant
+    - BUG/MINOR: hlua: don't use lua_pushfstring() when we don't expect LJMP
+    - BUG/MINOR: hlua: fix unsafe hlua_pusherror() usage
+    - BUG/MINOR: hlua: prevent LJMP in hlua_traceback()
+    - CLEANUP: hlua: get rid of hlua_traceback() security checks
+    - BUG/MINOR: hlua: fix leak in hlua_ckch_set() error path
+    - CLEANUP: hlua: simplify ambiguous lua_insert() usage in hlua_ctx_resume()
+    - BUG/MEDIUM: mux-quic: Don't unblock zero-copy fwding if blocked during nego
+    - MINOR: mux-quic: Don't send an emtpy H3 DATA frame during zero-copy forwarding
+    - BUG/MEDIUM: ssl: wrong priority whem limiting ECDSA ciphers in ECDSA+RSA configuration
+    - BUG/MEDIUM: ssl: bad auth selection with TLS1.2 and WolfSSL
+    - BUG/MINOR: quic: fix computed length of emitted STREAM frames
+    - BUG/MINOR: quic: ensure Tx buf is always purged
+    - BUG/MEDIUM: stconn/mux-h1: Fix suspect change causing timeouts
+    - BUG/MAJOR: mux-h1:  Properly copy chunked input data during zero-copy nego
+    - BUG/MINOR: mux-h1: Use the right variable to set NEGO_FF_FL_EXACT_SIZE flag
+    - DOC: install: remove boringssl from the list of supported libraries
+    - MINOR: log: fix "http-send-name-header" ignore warning message
+    - BUG/MINOR: proxy: fix server_id_hdr_name leak on deinit()
+    - BUG/MINOR: proxy: fix log_tag leak on deinit()
+    - BUG/MINOR: proxy: fix email-alert leak on deinit()
+    - BUG/MINOR: proxy: fix check_{command,path} leak on deinit()
+    - BUG/MINOR: proxy: fix dyncookie_key leak on deinit()
+    - BUG/MINOR: proxy: fix source interface and usesrc leaks on deinit()
+    - BUG/MINOR: proxy: fix header_unique_id leak on deinit()
+    - MINOR: proxy: add proxy_free_common() helper function
+    - BUG/MEDIUM: proxy: fix UAF with {tcp,http}checks logformat expressions
+    - MINOR: log: change wording in lf_expr_postcheck() error message
+    - BUG/MEDIUM: log: fix lf_expr_postcheck() behavior with default section
+    - CLEANUP: log/proxy: fix comment in proxy_free_common()
+    - DOC: config: move "hash-key" from proxy to server options
+    - DOC: config: add missing section hint for "guid" proxy keyword
+    - DOC: config: add missing context hint for new server and proxy keywords
+    - BUG/MINOR: promex: Skip resolvers metrics when there is no resolver section
+    - DOC: internals: add a documentation about the master worker
+    - BUG/MAJOR: mux-h1: Prevent any UAF on H1 connection after draining a request
+    - BUG/MINOR: quic: fix padding of INITIAL packets
+    - OPTIM: quic: fill whole Tx buffer if needed
+    - MINOR: quic: refactor qc_build_pkt() error handling
+    - MINOR: quic: use global datagram headlen definition
+    - MINOR: quic: refactor qc_prep_pkts() loop
+    - DOC/MINOR: management: add missed -dR and -dv options
+    - DOC/MINOR: management: add -dZ option
+    - DOC: management: rename show stats domain cli "dns" to "resolvers"
+    - REORG: log: reorder send log helpers by dependency order
+    - MINOR: session: expose session_embryonic_build_legacy_err() function
+    - MEDIUM: log/session: handle embryonic session log within sess_log()
+    - MINOR: log: provide sending log context to process_send_log() when available
+    - MINOR: log: add log_orig_to_str() function
+    - MINOR: log: provide log origin in logformat expressions using '%OG'
+    - CLEANUP: log: remove ambiguous legacy comment for resolve_logger()
+    - MINOR: log/backend: always free parsing hints in resolve_logger()
+    - MINOR: log: make resolve_logger() static
+    - MINOR: log: provide proxy context to resolve_logger()
+    - MINOR: log: add __send_log_set_metadata_sd helper
+    - MINOR: log: add logger flags
+    - MINOR: log: add log-profile parsing logic
+    - MINOR: log: add log profile buildlines
+    - MEDIUM: log: handle log-profile in process_send_log()
+    - DOC: config: add documentation for log profiles
+    - REGTESTS: log: add a test for log-profile
+    - MINOR: ssl: add ssl_sock_bind_verifycbk() in ssl_sock.h
+    - REORG: ssl: move the SNI selection code in ssl_clienthello.c
+    - BUILD: ssl: fix build with wolfSSL
+    - CI: github: upgrade aws-lc to 1.29.0
+    - Revert "CI: github: upgrade aws-lc to 1.29.0"
+    - MEDIUM: ssl: support for ECDA+RSA certificate selection with AWS-LC
+    - BUILD: ssl: disable deprecated functions for AWS-LC 1.29.0
+    - MINOR: ssl: relax the 'ssl.default-dh-param' keyword parsing
+    - CI: github: upgrade aws-lc to 1.29.0
+    - DOC: INSTALL: minimum AWS-LC version is v1.22.0
+    - CI: github: do the AWS-LC weekly build with ERR=1
+
+2024/05/29 : 3.1-dev0
+    - MINOR: version: mention that it's development again
+
+2024/05/29 : 3.0.0
+    - MINOR: sample: implement the uptime sample fetch
+    - CI: scripts: fix build of vtest regarding option -C
+    - CI: scripts: build vtest using multiple CPUs
+    - MINOR: log: rename 'log-format tag' to 'log-format alias'
+    - DOC: config: document logformat item naming and typecasting features
+    - BUILD: makefile: yearly reordering of objects by build time
+    - BUILD: fd: errno is also needed without poll()
+    - DOC: config: fix two typos "RST_STEAM" vs "RST_STREAM"
+    - DOC: config: refer to the non-deprecated keywords in ocsp-update on/off
+    - DOC: streamline http-reuse and connection naming definition
+    - REGTESTS: complete http-reuse test with pool-conn-name
+    - DOC: config: add %ID logformat alias alternative
+    - CLEANUP: ssl/ocsp: readable ifdef in ssl_sock_load_ocsp
+    - BUG/MINOR: ssl/ocsp: init callback func ptr as NULL
+    - CLEANUP: ssl_sock: move dirty openssl-1.0.2 wrapper to openssl-compat
+    - BUG/MINOR: activity: fix Delta_calls and Delta_bytes count
+    - CI: github: upgrade the WolfSSL job to 5.7.0
+    - DOC: install: update quick build reminders with some missing options
+    - DOC: install: update the range of tested openssl version to cover 3.3
+    - DEV: patchbot: prepare for new version 3.1-dev
+    - MINOR: version: mention that it's 3.0 LTS now.
+
+2024/05/24 : 3.0-dev13
+    - CLEANUP: ssl/cli: remove unused code in dump_crtlist_conf
+    - MINOR: ssl: check parameter in ckch_conf_cmp()
+    - BUG/MINOR: ring: free ring's allocated area not ring's usable area when using maps
+    - DOC: configuration: rework the crt-store load documentation
+    - DEBUG: tools: add vma_set_name() helper
+    - DEBUG: shctx: name shared memory using vma_set_name()
+    - DEBUG: sink: add name hint for memory area used by memory-backed sinks
+    - DEBUG: pollers: add name hint for large memory areas used by pollers
+    - DEBUG: errors: add name hint for startup-logs memory area
+    - DEBUG: fd: add name hint for large memory areas
+    - MEDIUM: ssl: don't load file by discovering them in crt-store
+    - DOC: configuration: update the crt-list documentation
+    - DOC: configuration: add the supported crt-store options in crt-list
+    - BUG/MEDIUM: proto: fix fd leak in <proto>_connect_server
+    - MINOR: sock: set conn->err_code in case of EPERM
+    - BUG/MINOR: http-ana: Don't crush stream termination condition on internal error
+    - MAJOR: spoe: Let the SPOE back into the game
+    - BUG/MINOR: connection: parse PROXY TLV for LOCAL mode
+    - BUG/MINOR: server: free PROXY v2 TLVs on srv drop
+    - MINOR: rhttp: add log on connection allocation failure
+    - BUG/MEDIUM: rhttp: fix preconnect on single-thread
+    - BUG/MINOR: rhttp: prevent listener suspend
+    - BUG/MINOR: rhttp: fix task_wakeup state
+    - MINOR: session: define flag to explicitely release listener on free
+    - MEDIUM: rhttp: create session for active preconnect
+    - MINOR: rhttp: support PROXY emission on preconnect
+    - MINOR: connection: support PROXY v2 TLV emission without stream
+    - MINOR: traces: enumerate the list of levels/verbosities when not found
+    - BUG/MINOR: sock: fix sock_create_server_socket
+    - MINOR: proto: fix coding style
+    - BUG/MAJOR: quic: Crash with TLS_AES_128_CCM_SHA256 (libressl only)
+    - REGTESTS: scripts: allow to change the vtest timeout
+    - BUG/MEDIUM: quic_tls: prevent LibreSSL < 4.0 from negotiating CHACHA20_POLY1305
+    - CI: scripts/build-ssl.sh: loudly fail on unsupported platforms
+    - BUG/MEDIUM: mux-quic: Create sedesc in same time of the QUIC stream
+    - MINOR: mux-quic: Set abort info for SC-less QCS on STOP_SENDING frame
+    - CI: scripts/build-ssl: add a DESTDIR and TMPDIR variable
+    - CI: scripts/buil-ssl: cleanup the boringssl and quictls build
+    - MINOR: config: add thread-hard-limit to set an upper bound to nbthread
+    - BUILD: quic: fix unused variable warning when threads are disabled
+    - BUG/MEDIUM: stick-tables: Fix race with peers when trashing oldest entries
+    - BUG/MEDIUM: stick-tables: Fix race with peers when killing a sticky session
+    - BUG/MEDIUM: stick-tables: make sure never to create two same remote entries
+    - CLEANUP: stick-tables: remove a few unneeded tests for use_wrlock
+    - MINOR: stick-tables: remove the uneeded read lock in stksess_free()
+    - CLEANUP: tools: fix vma_set_name() function comment
+    - DEBUG: tools: add vma_set_name_id() helper
+    - DEBUG: pollers/fd: add thread id suffix to per-thread memory areas name hints
+    - DOC: config: fix aes_gcm_enc() description text
+    - BUILD: trace: fix warning on null dereference
+    - MEDIUM: config: prevent communication with privileged ports
+    - MAJOR: config: prevent QUIC with clients privileged port by default
+    - BUG/MINOR: quic: adjust restriction for stateless reset emission
+    - MINOR: quic: clarify doc for quic_recv()
+    - MINOR: server: generalize sni expr parsing
+    - MINOR: server: define pool-conn-name keyword
+    - MEDIUM: connection: use pool-conn-name instead of sni on reuse
+    - BUG/MINOR: rhttp: initialize session origin after preconnect reversal
+    - BUG/MEDIUM: server/dns: preserve server's port upon resolution timeout or error
+    - BUG/MINOR: http-htx: Support default path during scheme based normalization
+    - BUG/MINOR: server: Don't reset resolver options on a new default-server line
+    - DOC: quic: specify that connection migration is not supported
+    - DOC: config: fix incorrect section reference about custom log format
+    - DOC: config: uniformize the naming and description of custom log format args
+    - DOC: config: clarify the fact that custom log format is not just for logging
+    - REGTESTS: acl_cli_spaces: avoid a warning caused by undefined logs
+
+2024/05/18 : 3.0-dev12
+    - CI: drop asan.log umbrella completely
+    - BUG/MINOR: log: fix leak in add_sample_to_logformat_list() error path
+    - BUG/MINOR: log: smp_rgs array issues with inherited global log directives
+    - MINOR: rhttp: Don't require SSL when attach-srv name parsing
+    - REGTESTS: ssl: be more verbose with ocsp_compat_check.vtc
+    - DOC: Update UUID references to RFC 9562
+    - MINOR: hlua: add hlua_nb_instruction getter
+    - MEDIUM: hlua: take nbthread into account in hlua_get_nb_instruction()
+    - BUG/MEDIUM: server: clear purgeable conns before server deletion
+    - BUG/MINOR: mux-quic: fix error code on shutdown for non HTTP/3
+    - BUG/MINOR: qpack: fix error code reported on QPACK decoding failure
+    - BUG/MEDIUM: htx: mark htx_sl as packed since it may be realigned
+    - BUG/MEDIUM: stick-tables: properly mark stktable_data as packed
+    - SCRIPTS: run-regtests: fix a few occurrences of extended regexes
+    - BUG/MINOR: ssl_sock: fix xprt_set_used() to properly clear the TASK_F_USR1 bit
+    - MINOR: dynbuf: provide a b_dequeue() variant for multi-thread
+    - BUG/MEDIUM: muxes: enforce buf_wait check in takeover()
+    - BUG/MINOR: h1: Check authority for non-CONNECT methods only if a scheme is found
+    - BUG/MEDIUM: h1: Reject CONNECT request if the target has a scheme
+    - BUG/MAJOR: h1: Be stricter on request target validation during message parsing
+    - MINOR: qpack: prepare error renaming
+    - MINOR: h3/qpack: adjust naming for errors
+    - MINOR: h3: adjust error reporting on sending
+    - MINOR: h3: adjust error reporting on receive
+    - MINOR: mux-quic: support glitches
+    - MINOR: h3: report glitch on RFC violation
+    - BUILD: stick-tables: better mark the stktable_data as 32-bit aligned
+    - MINOR: ssl: rename tune.ssl.ocsp-update.mode in ocsp-update.mode
+    - REGTESTS: update the ocsp-update tests
+    - BUILD: stats: remove non portable getline() usage
+    - MEDIUM: ssl: add ocsp-update.mindelay and ocsp-update.maxdelay
+    - BUILD: log: get rid of non-portable strnlen() func
+    - BUG/MEDIUM: fd: prevent memory waste in fdtab array
+    - CLEANUP: compat: make the MIN/MAX macros more reliable
+    - Revert: MEDIUM: evports: permit to report multiple events at once"
+    - BUG/MINOR: stats: Don't state the 303 redirect response is chunked
+    - MINOR: mux-h1: Add a flag to ignore the request payload
+    - REORG: mux-h1: Group H1S_F_BODYLESS_* flags
+    - CLEANUP: mux-h1: Remove unused H1S_F_ERROR_MASK mask value
+    - MEDIUM: mux-h1: Support C-L/T-E header suppressions when sending messages
+    - MINOR: ssl: ckch_store_new_load_files_conf() loads filenames from ckch_conf
+    - MEDIUM: ssl/crtlist: loading crt-store keywords from a crt-list
+    - CLEANUP: ssl/ocsp: remove the deprecated parsing code for "ocsp-update"
+    - MINOR: ssl: pass ckch_store instead of ckch_data to ssl_sock_load_ocsp()
+    - MEDIUM: ssl: ckch_conf_parse() uses -1/0/1 for off/default/on
+    - MINOR: ssl: handle PARSE_TYPE_INT and PARSE_TYPE_ONOFF in ckch_store_load_files()
+    - MINOR: ssl/ocsp: use 'ocsp-update' in crt-store
+    - MINOR: ssl: ckch_conf_clean() utility function for ckch_conf
+    - MEDIUM: ssl: add ocsp-update.disable global option
+    - MEDIUM: ssl/cli: handle crt-store keywords in crt-list over the CLI
+    - MINOR: ssl: ckch_conf_cmp() compare multiple ckch_conf structures
+    - MEDIUM: ssl: temporarily load files by detecting their presence in crt-store
+    - REGTESTS: ocsp-update: change the reg-test to support the new crt-store mode
+    - DOC: capabilities: fix chapter header rendering
+
+2024/05/10 : 3.0-dev11
+    - BUILD: clock: improve check for pthread_getcpuclockid()
+    - CI: add Illumos scheduled workflow
+    - CI: netbsd: limit scheduled workflow to parent repo only
+    - OPTIM: log: resolve logformat options during postparsing
+    - BUG/MINOR: haproxy: only tid 0 must not sleep if got signal
+    - REGTEST: add tests for acl() sample fetch
+    - BUG/MINOR: acl: support built-in ACLs with acl() sample
+    - BUG/MINOR: cfgparse: use curproxy global var from config post validation
+    - MEDIUM: stconn/muxes: Add an abort reason for SE shutdowns on muxes
+    - MINOR: mux-h2: Set the SE abort reason when a RST_STREAM frame is received
+    - MEDIUM: mux-h2: Forward h2 client cancellations to h2 servers
+    - MINOR: mux-quic: Set tha SE abort reason when a STOP_SENDING frame is received
+    - MINOR: stconn: Add samples to retrieve about stream aborts
+    - MINOR: mux-quic: Add .ctl callback function to get info about a mux connection
+    - MINOR: muxes: Add ctl commands to get info on streams for a connection
+    - MINOR: connection: Add samples to retrieve info on streams for a connection
+    - BUG/MEDIUM: log/ring: broken syslog octet counting
+    - BUG/MEDIUM: mux-quic: fix crash on STOP_SENDING received without SD
+    - DOC: lua: fix filters.txt file location
+    - MINOR: dynbuf: pass a criticality argument to b_alloc()
+    - MINOR: dynbuf: add functions to help queue/requeue buffer_wait fields
+    - MINOR: dynbuf: use the b_queue()/b_requeue() functions everywhere
+    - MEDIUM: dynbuf: make the buffer_wq an array of list heads
+    - CLEANUP: tinfo: better align fields in thread_ctx
+    - MINOR: dynbuf: provide a b_dequeue() function to detach a bw from the queue
+    - MEDIUM: dynbuf: generalize the use of b_dequeue() to detach buffer_wait
+    - MEDIUM: dynbuf/stream: re-enable queueing upon failed buffer allocation
+    - MEDIUM: dynbuf/stream: do not allocate the buffers in the callback
+    - MEDIUM: applet: make appctx_buf_available() only wake the applet up, not allocate
+    - MINOR: applet: set the blocking flag in the buffer allocation function
+    - MINOR: applet: adjust the allocation criticity based on the requested buffer
+    - MINOR: dynbuf/mux-h1: use different criticalities for buffer allocations
+    - MEDIUM: dynbuf/mux-h1: do not allocate the buffers in the callback
+    - MEDIUM: dynbuf: refrain from offering a buffer if more critical ones are waiting
+    - MINOR: stconn: report that a buffer allocation succeeded
+    - MINOR: stream: report that a buffer allocation succeeded
+    - MINOR: applet: report about buffer allocation success
+    - MINOR: mux-h1: report that a buffer allocation succeeded
+    - MEDIUM: stream: allocate without queuing when retrying
+    - MEDIUM: channel: allocate without queuing when retrying
+    - MEDIUM: mux-h1: allocate without queuing when retrying
+    - MEDIUM: dynbuf: implement emergency buffers
+    - MEDIUM: dynbuf: use emergency buffers upon failed memory allocations
+
+2024/05/04 : 3.0-dev10
+    - BUG/MEDIUM: cache: Vary not working properly on anything other than accept-encoding
+    - REGTESTS: cache: Add test on 'vary' other than accept-encoding
+    - BUG/MINOR: stats: replace objt_* by __objt_* macros
+    - CLEANUP: tools/cbor: rename cbor_encode_ctx struct members
+    - MINOR: log/cbor: _lf_cbor_encode_byte() explicitly requires non-NULL ctx
+    - BUG/MINOR: log: fix global lf_expr node options behavior
+    - CLEANUP: log: add a macro to know if a lf_node is configurable
+    - MINOR: httpclient: allow to use absolute URI with new flag HC_F_HTTPROXY
+    - MINOR: ssl: introduce ocsp_update.http_proxy for ocsp-update keyword
+    - BUG/MINOR: log/encode: consider global options for key encoding
+    - BUG/MINOR: log/encode: fix potential NULL-dereference in LOGCHAR()
+    - BUG/MINOR: log: fix global lf_expr node options behavior (2nd try)
+    - MINOR: log/cbor: _lf_cbor_encode_byte() explicitly requires non-NULL ctx (again)
+    - BUG/MEDIUM: log: don't ignore disabled node's options
+    - BUG/MINOR: stconn: don't wake up an applet waiting on buffer allocation
+    - MINOR: sock: rename sock to sock_fd in sock_create_server_socket
+    - MEDIUM: proto_uxst: take in account server namespace
+    - MEIDUM: unix sock: use my_socketat to create bind socket
+    - MINOR: sock_set_mark: take sock family in account
+    - MEDIUM: proto: make common fd checks in sock_create_server_socket
+    - MINOR: sock: add EPERM case in sock_handle_system_err
+    - MINOR: capabilities: add cap_sys_admin support
+    - CLEANUP: ssl: clean the includes in ssl_ocsp.c
+    - CLEANUP: ssl: move the global ocsp-update options parsing to ssl_ocsp.c
+    - MINOR: stats: fix visual alignment for stat_cols_px definition
+    - MINOR: stats: convert req_tot as generic column
+    - MINOR: stats: prepare stats-file support for values other than FN_COUNTER
+    - MINOR: counters: move freq-ctr from proxy/server into counters struct
+    - MINOR: stats: support rate in stats-file
+    - MINOR: stats: convert rate as generic column for proxy stats
+    - MINOR: counters: move last_change into counters struct
+    - MINOR: stats: support age in stats-file
+    - MINOR: stats: convert age as generic column for proxy stat
+    - CLEANUP: ssl: rename new_ckch_store_load_files_path() to ckch_store_new_load_files_path()
+    - MINOR: ssl: rename ocsp_update.http_proxy into ocsp-update.httpproxy
+    - REORG: stats: define stats-proxy source module
+    - MINOR: stats: extract proxy clear-counter in a dedicated function
+    - REGTESTS: stats: add test stats-file counters preload
+    - CI: netbsd: adjust packages after NetBSD-10 released
+    - CLEANUP: assorted typo fixes in the code and comments
+    - REGTESTS: replace REQUIRE_VERSION by version_atleast
+    - MEDIUM: log: optimizing tmp->type handling in sess_build_logline()
+    - BUG/MINOR: log: prevent double spaces emission in sess_build_logline()
+    - OPTIM: log: declare empty buffer as global variable
+    - OPTIM: log: use thread local lf_buildctx to stop pushing it on the stack
+    - OPTIM: log: use lf_buildctx's buffer instead of temporary stack buffers
+    - OPTIM: log: speedup date printing in sess_build_logline() when no encoding is used
+
 2024/04/27 : 3.0-dev9
     - BUILD: ssl: use %zd for sizeof() in ssl_ckch.c
     - MINOR: backend: use be_counters for health down accounting

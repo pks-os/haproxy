@@ -71,18 +71,9 @@
 #define BUFSIZE	        16384
 #endif
 
-/* certain buffers may only be allocated for responses in order to avoid
- * deadlocks caused by request queuing. 2 buffers is the absolute minimum
- * acceptable to ensure that a request gaining access to a server can get
- * a response buffer even if it doesn't completely flush the request buffer.
- * The worst case is an applet making use of a request buffer that cannot
- * completely be sent while the server starts to respond, and all unreserved
- * buffers are allocated by request buffers from pending connections in the
- * queue waiting for this one to flush. Both buffers reserved buffers may
- * thus be used at the same time.
- */
+// number of per-thread emergency buffers for low-memory conditions
 #ifndef RESERVED_BUFS
-#define RESERVED_BUFS   2
+#define RESERVED_BUFS   4
 #endif
 
 // reserved buffer space for header rewriting
@@ -555,6 +546,14 @@
 #ifndef RING_DFLT_QUEUES
 # define RING_DFLT_QUEUES   6
 #endif
+
+/* Elements used by memory profiling. This determines the number of buckets to
+ * store stats.
+ */
+#ifndef MEMPROF_HASH_BITS
+# define MEMPROF_HASH_BITS 10
+#endif
+#define MEMPROF_HASH_BUCKETS (1U << MEMPROF_HASH_BITS)
 
 /* Let's make DEBUG_STRICT default to 1 to get rid of it in the makefile */
 #ifndef DEBUG_STRICT

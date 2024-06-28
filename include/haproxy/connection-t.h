@@ -323,6 +323,8 @@ enum mux_ctl_type {
 	MUX_CTL_REVERSE_CONN, /* Notify about an active reverse connection accepted. */
 	MUX_CTL_SUBS_RECV, /* Notify the mux it must wait for read events again  */
 	MUX_CTL_GET_GLITCHES, /* returns number of glitches on the connection */
+	MUX_CTL_GET_NBSTRM, /* Return the current number of streams on the connection */
+	MUX_CTL_GET_MAXSTRM, /* Return the max number of streams supported by the connection */
 };
 
 /* sctl command used by mux->sctl() */
@@ -411,7 +413,7 @@ struct mux_ops {
 	size_t (*done_fastfwd)(struct stconn *sc); /* Callback to terminate fast data forwarding */
 	int (*fastfwd)(struct stconn *sc, unsigned int count, unsigned int flags); /* Callback to init fast data forwarding */
 	int (*resume_fastfwd)(struct stconn *sc, unsigned int flags); /* Callback to resume fast data forwarding */
-	void (*shut)(struct stconn *sc, enum se_shut_mode);     /* shutdown function */
+	void (*shut)(struct stconn *sc, enum se_shut_mode, struct se_abort_info *reason); /* shutdown function */
 
 	int (*attach)(struct connection *conn, struct sedesc *, struct session *sess); /* attach a stconn to an outgoing connection */
 	struct stconn *(*get_first_sc)(const struct connection *); /* retrieves any valid stconn from this connection */
@@ -471,7 +473,7 @@ struct conn_src {
  * CAUTION! Always update CONN_HASH_PARAMS_TYPE_COUNT when adding a new entry.
  */
 enum conn_hash_params_t {
-	CONN_HASH_PARAMS_TYPE_SNI      = 0x1,
+	CONN_HASH_PARAMS_TYPE_NAME     = 0x1,
 	CONN_HASH_PARAMS_TYPE_DST_ADDR = 0x2,
 	CONN_HASH_PARAMS_TYPE_DST_PORT = 0x4,
 	CONN_HASH_PARAMS_TYPE_SRC_ADDR = 0x8,
@@ -492,7 +494,7 @@ enum conn_hash_params_t {
  * connection hash.
  */
 struct conn_hash_params {
-	uint64_t sni_prehash;
+	uint64_t name_prehash;
 	uint64_t proxy_prehash;
 	uint64_t mark_tos_prehash;
 	void *target;

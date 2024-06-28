@@ -1058,7 +1058,6 @@ static void cli_io_handler(struct appctx *appctx)
 		goto out;
 
 	if (!appctx_get_buf(appctx, &appctx->outbuf)) {
-		applet_fl_set(appctx, APPCTX_FL_OUTBLK_ALLOC);
 		goto out;
 	}
 
@@ -3145,7 +3144,7 @@ int pcli_wait_for_response(struct stream *s, struct channel *rep, int an_bit)
 		if (!lf_expr_isempty(&fe->logformat) && s->logs.logwait &&
 		    !(s->flags & SF_MONITOR) &&
 		    (!(fe->options & PR_O_NULLNOLOG) || s->req.total)) {
-			s->do_log(s);
+			s->do_log(s, LOG_ORIG_TXN_CLOSE);
 		}
 
 		/* stop tracking content-based counters */

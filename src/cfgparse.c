@@ -1259,14 +1259,6 @@ out:
 	return err_code;
 }
 
-void free_email_alert(struct proxy *p)
-{
-	ha_free(&p->email_alert.mailers.name);
-	ha_free(&p->email_alert.from);
-	ha_free(&p->email_alert.to);
-	ha_free(&p->email_alert.myhostname);
-}
-
 
 int
 cfg_parse_netns(const char *file, int linenum, char **args, int kwm)
@@ -2705,7 +2697,6 @@ static int numa_detect_topology()
 int check_config_validity()
 {
 	int cfgerr = 0;
-	struct proxy *curproxy = NULL;
 	struct proxy *init_proxies_list = NULL;
 	struct stktable *t;
 	struct server *newsrv = NULL;
@@ -2731,6 +2722,13 @@ int check_config_validity()
 	if (!global.tune.requri_len)
 		global.tune.requri_len = REQURI_LEN;
 
+	if (!global.thread_limit)
+		global.thread_limit = MAX_THREADS;
+
+#if defined(USE_THREAD)
+	if (thread_cpus_enabled_at_boot > global.thread_limit)
+		thread_cpus_enabled_at_boot = global.thread_limit;
+#endif
 	if (!global.nbthread) {
 		/* nbthread not set, thus automatic. In this case, and only if
 		 * running on a single process, we enable the same number of
@@ -2754,12 +2752,23 @@ int check_config_validity()
 				global.nbtgroups = 1;
 
 			if (global.nbthread > MAX_THREADS_PER_GROUP * global.nbtgroups) {
-				ha_diag_warning("nbthread not set, found %d CPUs, limiting to %d threads (maximum is %d per thread group). Please set nbthreads and/or increase thread-groups in the global section to silence this warning.\n",
-					   global.nbthread, MAX_THREADS_PER_GROUP * global.nbtgroups, MAX_THREADS_PER_GROUP);
+				if (global.nbthread <= global.thread_limit)
+					ha_diag_warning("nbthread not set, found %d CPUs, limiting to %d threads (maximum is %d per thread group). "
+							"Please set nbthreads and/or increase thread-groups in the global section to silence this warning.\n",
+							global.nbthread, MAX_THREADS_PER_GROUP * global.nbtgroups, MAX_THREADS_PER_GROUP);
 				global.nbthread = MAX_THREADS_PER_GROUP * global.nbtgroups;
 			}
+
+			if (global.nbthread > global.thread_limit)
+				global.nbthread = global.thread_limit;
 		}
 #endif
+	}
+	else if (global.nbthread > global.thread_limit) {
+		ha_warning("nbthread forced to a higher value (%d) than the configured thread-hard-limit (%d), enforcing the limit. "
+			   "Please fix either value to remove this warning.\n",
+			   global.nbthread, global.thread_limit);
+		global.nbthread = global.thread_limit;
 	}
 
 	if (!global.nbtgroups)
@@ -3036,7 +3045,7 @@ init_proxies_list_stage1:
 				ha_warning("'%s' will be ignored for %s '%s' (requires 'option httpchk').\n",
 					   "send-state", proxy_type_str(curproxy), curproxy->id);
 				err_code |= ERR_WARN;
-				curproxy->options &= ~PR_O2_CHK_SNDST;
+				curproxy->options2 &= ~PR_O2_CHK_SNDST;
 			}
 		}
 
@@ -3058,7 +3067,7 @@ init_proxies_list_stage1:
 			}
 		}
 
-		if (curproxy->email_alert.set) {
+		if (curproxy->email_alert.flags & PR_EMAIL_ALERT_SET) {
 		    if (!(curproxy->email_alert.mailers.name && curproxy->email_alert.from && curproxy->email_alert.to)) {
 			    ha_warning("'email-alert' will be ignored for %s '%s' (the presence any of "
 				       "'email-alert from', 'email-alert level' 'email-alert mailers', "

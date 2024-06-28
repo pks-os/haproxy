@@ -114,7 +114,7 @@ void stats_dump_file_header(int type, struct buffer *out)
  * using <st_tree> as prefilled proxy stats columns. If stats-file section is
  * unknown, only <domain> will be set to STFILE_DOMAIN_UNSET.
  *
- * Returns 0 on sucess. On fatal error, non-zero is returned and parsing shoud
+ * Returns 0 on success. On fatal error, non-zero is returned and parsing should
  * be interrupted.
  */
 static int parse_header_line(struct ist header, struct eb_root *st_tree,
@@ -351,8 +351,6 @@ void apply_stats_file(void)
 	FILE *file;
 	struct ist istline;
 	char *line = NULL;
-	ssize_t len;
-	size_t alloc_len;
 	int linenum;
 
 	if (!global.stats_file)
@@ -370,15 +368,20 @@ void apply_stats_file(void)
 		goto out;
 	}
 
+	line = malloc(sizeof(char) * LINESIZE);
+	if (!line) {
+		ha_warning("config: Can't load stats file: line alloc error.\n");
+		goto out;
+	}
+
 	linenum = 0;
 	domain = STFILE_DOMAIN_UNSET;
 	while (1) {
-		len = getline(&line, &alloc_len, file);
-		if (len < 0)
+		if (!fgets(line, LINESIZE, file))
 			break;
 
 		++linenum;
-		istline = iststrip(ist2(line, len));
+		istline = iststrip(ist(line));
 		if (!istlen(istline))
 			continue;
 

@@ -36,10 +36,12 @@ extern struct pool_head *pool_head_sess_priv_conns;
 
 struct session *session_new(struct proxy *fe, struct listener *li, enum obj_type *origin);
 void session_free(struct session *sess);
+void conn_session_free(struct connection *conn);
 int session_accept_fd(struct connection *cli_conn);
 int conn_complete_session(struct connection *conn);
 struct task *session_expire_embryonic(struct task *t, void *context, unsigned int state);
 void __session_add_glitch_ctr(struct session *sess, uint inc);
+void session_embryonic_build_legacy_err(struct session *sess, struct buffer *out);
 
 
 /* Remove the refcount from the session to the tracked counters, and clear the
@@ -76,7 +78,7 @@ static inline void session_store_counters(struct session *sess)
 		}
 
 		stkctr_set_entry(stkctr, NULL);
-		stksess_kill_if_expired(stkctr->table, ts, 1);
+		stksess_kill_if_expired(stkctr->table, ts);
 	}
 }
 

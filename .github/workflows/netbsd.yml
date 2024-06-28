@@ -7,6 +7,7 @@ on:
 jobs:
   gcc:
     runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'haproxy' }}
     permissions:
       contents: read
     steps:
@@ -17,6 +18,6 @@ jobs:
         uses: vmactions/netbsd-vm@v1
         with:
           prepare: |
-            /usr/sbin/pkg_add gmake pcre2
+            /usr/sbin/pkg_add gmake curl
           run: |
             gmake CC=gcc TARGET=netbsd USE_OPENSSL=1 USE_LUA=1 USE_PCRE2=1 USE_PCRE2_JIT=1 USE_PROMEX=1 USE_ZLIB=1

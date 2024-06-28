@@ -260,6 +260,70 @@ static const char *hlua_tostring_safe(lua_State *L, int index)
 	return str;
 }
 
+/* below is an helper function similar to lua_pushvfstring() to push a
+ * formatted string on Lua stack but in a safe way (function may not LJMP).
+ * It can be useful to push allocated strings (ie: error messages) on the
+ * stack and ensure proper cleanup.
+ *
+ * Returns a pointer to the internal copy of the string on success and NULL
+ * on error.
+ *
+ * It is assumed that the calling function is allowed to manipulate <L>
+ */
+__LJMP static int _hlua_pushvfstring_safe(lua_State *L)
+{
+	const char **dst = lua_touserdata(L, 1);
+	const char *fmt = lua_touserdata(L, 2);
+	va_list *argp = lua_touserdata(L, 3);
+
+	*dst = lua_pushvfstring(L, fmt, *argp);
+	return 1;
+}
+static const char *hlua_pushvfstring_safe(lua_State *L, const char *fmt, va_list argp)
+{
+	const char *dst = NULL;
+	va_list cpy_argp; /* required if argp is implemented as array type */
+
+	if (!lua_checkstack(L, 4))
+		return NULL;
+
+	va_copy(cpy_argp, argp);
+
+	/* push our custom _hlua_pushvfstring_safe() function on the stack, then
+	 * push our destination string pointer, fmt and arg list
+	 */
+	lua_pushcfunction(L, _hlua_pushvfstring_safe);
+	lua_pushlightuserdata(L, &dst);        // 1st func argument = dst string pointer
+	lua_pushlightuserdata(L, (void *)fmt); // 2nd func argument = fmt
+	lua_pushlightuserdata(L, &cpy_argp);   // 3rd func argument = arg list
+
+	/* call our custom function with proper arguments using pcall() to catch
+	 * exceptions (if any)
+	 */
+	switch (lua_pcall(L, 3, 1, 0)) {
+		case LUA_OK:
+			break;
+		default:
+			/* error was caught */
+			dst = NULL;
+	}
+	va_end(cpy_argp);
+
+	return dst;
+}
+
+static const char *hlua_pushfstring_safe(lua_State *L, const char *fmt, ...)
+{
+	va_list argp;
+	const char *dst;
+
+	va_start(argp, fmt);
+	dst = hlua_pushvfstring_safe(L, fmt, argp);
+	va_end(argp);
+
+	return dst;
+}
+
 #define SET_SAFE_LJMP_L(__L, __HLUA) \
 	({ \
 		int ret; \
@@ -500,15 +564,16 @@ static inline void hlua_timer_stop(struct hlua_timer *timer)
      hlua resume, ie: time between effective yields)
  * - then check for yield cumulative timeout
  *
- * Returns 1 if the check succeeded and 0 if it failed
- * (ie: timeout exceeded)
+ * Returns 1 if the check succeeded, 0 if it failed because cumulative
+ * timeout is exceeded, and -1 if it failed because burst timeout is
+ * exceeded.
  */
 static inline int hlua_timer_check(const struct hlua_timer *timer)
 {
 	uint32_t pburst = _hlua_time_burst(timer); /* pending burst time in ms */
 
 	if (hlua_timeout_burst && (timer->burst + pburst) > hlua_timeout_burst)
-		return 0; /* burst timeout exceeded */
+		return -1; /* burst timeout exceeded */
 	if (timer->max && (timer->cumulative + timer->burst + pburst) > timer->max)
 		return 0; /* cumulative timeout exceeded */
 	return 1; /* ok */
@@ -516,7 +581,15 @@ static inline int hlua_timer_check(const struct hlua_timer *timer)
 
 /* Interrupts the Lua processing each "hlua_nb_instruction" instructions.
  * it is used for preventing infinite loops.
+ */
+static unsigned int hlua_nb_instruction = 0;
+
+/* Wrapper to retrieve the number of instructions between two interrupts
+ * depending on user settings and current hlua context. If not already
+ * explicitly set, we compute the ideal value using hard limits releaved
+ * by Thierry Fournier's work, whose original notes may be found below:
  *
+ * --
  * I test the scheer with an infinite loop containing one incrementation
  * and one test. I run this loop between 10 seconds, I raise a ceil of
  * 710M loops from one interrupt each 9000 instructions, so I fix the value
@@ -537,9 +610,42 @@ static inline int hlua_timer_check(const struct hlua_timer *timer)
  *  10000         | 710
  *  100000        | 710
  *  1000000       | 710
+ * --
  *
+ * Thanks to his work, we know we can safely use values between 500 and 10000
+ * without a significant impact on performance.
  */
-static unsigned int hlua_nb_instruction = 10000;
+static inline unsigned int hlua_get_nb_instruction(struct hlua *hlua)
+{
+	int ceil = 10000; /* above 10k, no significant performance gain */
+	int floor = 500;  /* below 500, significant performance loss */
+
+	if (hlua_nb_instruction) {
+		/* value enforced by user */
+		return hlua_nb_instruction;
+	}
+
+	/* not set, assign automatic value */
+	if (hlua->state_id == 0) {
+		/* this function is expected to be called during runtime (after config
+		 * parsing), thus global.nb_thread is expected to be set.
+		 */
+		BUG_ON(global.nbthread == 0);
+
+		/* main lua stack (shared global lock), take number of threads into
+		 * account in an attempt to reduce thread contention
+		 */
+		return MAX(floor, ceil / global.nbthread);
+	}
+	else {
+		/* per-thread lua stack, less contention is expected (no global lock),
+		 * allow up to the maximum number of instructions and hope that the
+		 * user manually yields after heavy (lock dependent) work from lua
+		 * script (e.g.: map manipulation).
+		 */
+		return ceil;
+	}
+}
 
 /* Descriptor for the memory allocation state. The limit is pre-initialised to
  * 0 until it is replaced by "tune.lua.maxmem" during the config parsing, or it
@@ -743,20 +849,41 @@ void hlua_unref(lua_State *L, int ref)
 	luaL_unref(L, LUA_REGISTRYINDEX, ref);
 }
 
-__LJMP const char *hlua_traceback(lua_State *L, const char* sep)
+__LJMP static int _hlua_traceback(lua_State *L)
+{
+	lua_Debug *ar = lua_touserdata(L, 1);
+
+	/* Fill fields:
+	 * 'S': fills in the fields source, short_src, linedefined, lastlinedefined, and what;
+	 * 'l': fills in the field currentline;
+	 * 'n': fills in the field name and namewhat;
+	 * 't': fills in the field istailcall;
+	 */
+	return lua_getinfo(L, "Slnt", ar);
+}
+
+
+/* This function cannot fail (output will simply be truncated upon errors) */
+const char *hlua_traceback(lua_State *L, const char* sep)
 {
 	lua_Debug ar;
 	int level = 0;
 	struct buffer *msg = get_trash_chunk();
 
 	while (lua_getstack(L, level++, &ar)) {
-		/* Fill fields:
-		 * 'S': fills in the fields source, short_src, linedefined, lastlinedefined, and what;
-		 * 'l': fills in the field currentline;
-		 * 'n': fills in the field name and namewhat;
-		 * 't': fills in the field istailcall;
-		 */
-		lua_getinfo(L, "Slnt", &ar);
+		if (!lua_checkstack(L, 2))
+			goto end; // abort
+
+		lua_pushcfunction(L, _hlua_traceback);
+		lua_pushlightuserdata(L, &ar);
+
+		/* safe getinfo */
+		switch (lua_pcall(L, 1, 1, 0)) {
+			case LUA_OK:
+				break;
+			default:
+				goto end; // abort
+		}
 
 		/* skip these empty entries, usually they come from deep C functions */
 		if (ar.currentline < 0 && *ar.what == 'C' && !*ar.namewhat && !ar.name)
@@ -797,6 +924,7 @@ __LJMP const char *hlua_traceback(lua_State *L, const char* sep)
 			chunk_appendf(msg, " ...");
 	}
 
+ end:
 	return msg->area;
 }
 
@@ -814,16 +942,50 @@ __LJMP static inline void check_args(lua_State *L, int nb, char *fcn)
 
 /* This function pushes an error string prefixed by the file name
  * and the line number where the error is encountered.
+ *
+ * It returns 1 on success and 0 on failure (function won't LJMP)
  */
+__LJMP static int _hlua_pusherror(lua_State *L)
+{
+	const char *fmt = lua_touserdata(L, 1);
+	va_list *argp = lua_touserdata(L, 2);
+
+	luaL_where(L, 2);
+	lua_pushvfstring(L, fmt, *argp);
+	lua_concat(L, 2);
+
+	return 1;
+}
 static int hlua_pusherror(lua_State *L, const char *fmt, ...)
 {
 	va_list argp;
+	int ret = 1;
+
+	if (!lua_checkstack(L, 3))
+		return 0;
+
 	va_start(argp, fmt);
-	luaL_where(L, 1);
-	lua_pushvfstring(L, fmt, argp);
+
+	/* push our custom _hlua_pusherror() function on the stack, then
+	 * push fmt and arg list
+	 */
+	lua_pushcfunction(L, _hlua_pusherror);
+	lua_pushlightuserdata(L, (void *)fmt); // 1st func argument = fmt
+	lua_pushlightuserdata(L, &argp);       // 2nd func argument = arg list
+
+	/* call our custom function with proper arguments using pcall() to catch
+	 * exceptions (if any)
+	 */
+	switch (lua_pcall(L, 2, 1, 0)) {
+		case LUA_OK:
+			break;
+		default:
+			ret = 0;
+	}
+
 	va_end(argp);
-	lua_concat(L, 2);
-	return 1;
+
+	return ret;
 }
 
 /* This functions is used with sample fetch and converters. It
@@ -1326,8 +1488,8 @@ __LJMP int hlua_lua2arg_check(lua_State *L, int first, struct arg *argp,
 			}
 			reg = regex_comp(argp[idx].data.str.area, !(argp[idx].type_flags & ARGF_REG_ICASE), 1, &err);
 			if (!reg) {
-				msg = lua_pushfstring(L, "error compiling regex '%s' : '%s'",
-						      argp[idx].data.str.area, err);
+				msg = hlua_pushfstring_safe(L, "error compiling regex '%s' : '%s'",
+						            argp[idx].data.str.area, err);
 				free(err);
 				goto error;
 			}
@@ -1347,7 +1509,8 @@ __LJMP int hlua_lua2arg_check(lua_State *L, int first, struct arg *argp,
 				ul = auth_find_userlist(argp[idx].data.str.area);
 
 			if (!ul) {
-				msg = lua_pushfstring(L, "unable to find userlist '%s'", argp[idx].data.str.area);
+				msg = hlua_pushfstring_safe(L, "unable to find userlist '%s'",
+				                            argp[idx].data.str.area);
 				goto error;
 			}
 			argp[idx].type = ARGT_USR;
@@ -1371,9 +1534,9 @@ __LJMP int hlua_lua2arg_check(lua_State *L, int first, struct arg *argp,
 
 		/* Check for type of argument. */
 		if ((mask & ARGT_MASK) != argp[idx].type) {
-			msg = lua_pushfstring(L, "'%s' expected, got '%s'",
-					      arg_type_names[(mask & ARGT_MASK)],
-					      arg_type_names[argp[idx].type & ARGT_MASK]);
+			msg = hlua_pushfstring_safe(L, "'%s' expected, got '%s'",
+					            arg_type_names[(mask & ARGT_MASK)],
+					            arg_type_names[argp[idx].type & ARGT_MASK]);
 			goto error;
 		}
 
@@ -1721,6 +1884,7 @@ static struct hlua *hlua_stream_ctx_prepare(struct stream *s, int state_id)
 void hlua_hook(lua_State *L, lua_Debug *ar)
 {
 	struct hlua *hlua;
+	int timer_check;
 
 	/* Get hlua struct, or NULL if we execute from main lua state */
 	hlua = hlua_gethlua(L);
@@ -1775,15 +1939,19 @@ void hlua_hook(lua_State *L, lua_Debug *ar)
 
  check_timeout:
 	/* If we cannot yield, check the timeout. */
-	if (!hlua_timer_check(&hlua->timer)) {
-		lua_pushfstring(L, "execution timeout");
+	timer_check = hlua_timer_check(&hlua->timer);
+	if (timer_check <= 0) {
+		if (!timer_check)
+			lua_pushfstring(L, "execution timeout");
+		else
+			lua_pushfstring(L, "burst timeout");
 		WILL_LJMP(lua_error(L));
 	}
 
 	/* Try to interrupt the process at the end of the current
 	 * unyieldable function.
 	 */
-	lua_sethook(hlua->T, hlua_hook, LUA_MASKRET|LUA_MASKCOUNT, hlua_nb_instruction);
+	lua_sethook(hlua->T, hlua_hook, LUA_MASKRET|LUA_MASKCOUNT, hlua_get_nb_instruction(hlua));
 }
 
 /* This function start or resumes the Lua stack execution. If the flag
@@ -1823,10 +1991,10 @@ static enum hlua_exec hlua_ctx_resume(struct hlua *lua, int yield_allowed)
 
 resume_execution:
 
-	/* This hook interrupts the Lua processing each 'hlua_nb_instruction'
+	/* This hook interrupts the Lua processing each 'hlua_get_nb_instruction()
 	 * instructions. it is used for preventing infinite loops.
 	 */
-	lua_sethook(lua->T, hlua_hook, LUA_MASKCOUNT, hlua_nb_instruction);
+	lua_sethook(lua->T, hlua_hook, LUA_MASKCOUNT, hlua_get_nb_instruction(lua));
 
 	/* Remove all flags except the running flags. */
 	HLUA_SET_RUN(lua);
@@ -1875,10 +2043,18 @@ resume_execution:
 		/* Check if the execution timeout is expired. If it is the case, we
 		 * break the Lua execution.
 		 */
-		if (!hlua_timer_check(&lua->timer)) {
-			lua_settop(lua->T, 0); /* Empty the stack. */
-			ret = HLUA_E_ETMOUT;
-			break;
+		{
+			int timer_check;
+
+			timer_check = hlua_timer_check(&lua->timer);
+			if (timer_check <= 0) {
+				if (!timer_check)
+					ret = HLUA_E_ETMOUT;
+				else
+					ret = HLUA_E_BTMOUT;
+				lua_settop(lua->T, 0); /* Empty the stack. */
+				break;
+			}
 		}
 		/* Process the forced yield. if the general yield is not allowed or
 		 * if no task were associated this the current Lua execution
@@ -1919,12 +2095,14 @@ resume_execution:
 		msg = hlua_tostring_safe(lua->T, -1);
 		trace = hlua_traceback(lua->T, ", ");
 		if (msg)
-			lua_pushfstring(lua->T, "[state-id %d] runtime error: %s from %s", lua->state_id, msg, trace);
+			hlua_pushfstring_safe(lua->T, "[state-id %d] runtime error: %s from %s",
+			                      lua->state_id, msg, trace);
 		else
-			lua_pushfstring(lua->T, "[state-id %d] unknown runtime error from %s", lua->state_id, trace);
+			hlua_pushfstring_safe(lua->T, "[state-id %d] unknown runtime error from %s",
+			                      lua->state_id, trace);
 
-		/* Move the error msg at the top and then empty the stack except last msg */
-		lua_insert(lua->T, -lua_gettop(lua->T));
+		/* Move the error msg at the bottom and then empty the stack except last msg */
+		lua_insert(lua->T, 1);
 		lua_settop(lua->T, 1);
 		ret = HLUA_E_ERRMSG;
 		break;
@@ -1943,12 +2121,14 @@ resume_execution:
 		}
 		msg = hlua_tostring_safe(lua->T, -1);
 		if (msg)
-			lua_pushfstring(lua->T, "[state-id %d] message handler error: %s", lua->state_id, msg);
+			hlua_pushfstring_safe(lua->T, "[state-id %d] message handler error: %s",
+			                      lua->state_id, msg);
 		else
-			lua_pushfstring(lua->T, "[state-id %d] message handler error", lua->state_id);
+			hlua_pushfstring_safe(lua->T, "[state-id %d] message handler error",
+			                      lua->state_id);
 
-		/* Move the error msg at the top and then empty the stack except last msg */
-		lua_insert(lua->T, -lua_gettop(lua->T));
+		/* Move the error msg at the bottom and then empty the stack except last msg */
+		lua_insert(lua->T, 1);
 		lua_settop(lua->T, 1);
 		ret = HLUA_E_ERRMSG;
 		break;
@@ -1971,6 +2151,7 @@ resume_execution:
 		break;
 
 	case HLUA_E_ETMOUT:
+	case HLUA_E_BTMOUT:
 	case HLUA_E_NOMEM:
 	case HLUA_E_YIELD:
 	case HLUA_E_ERR:
@@ -2328,9 +2509,7 @@ __LJMP static int hlua_map_new(struct lua_State *L)
 		/* error case: we can't use luaL_error because we must
 		 * free the err variable.
 		 */
-		luaL_where(L, 1);
-		lua_pushfstring(L, "'new': %s.", err);
-		lua_concat(L, 2);
+		hlua_pusherror(L, "'new': %s.", err);
 		free(err);
 		chunk_destroy(&args[0].data.str);
 		WILL_LJMP(lua_error(L));
@@ -4661,7 +4840,7 @@ __LJMP static int hlua_run_sample_fetch(lua_State *L)
 
 	/* Run the special args checker. */
 	if (f->val_args && !f->val_args(args, NULL)) {
-		lua_pushfstring(L, "error in arguments");
+		hlua_pushfstring_safe(L, "error in arguments");
 		goto error;
 	}
 
@@ -9079,6 +9258,9 @@ struct task *hlua_process_task(struct task *task, void *context, unsigned int st
 	case HLUA_E_ETMOUT:
 		SEND_ERR(NULL, "Lua task: execution timeout.\n");
 		goto err_task_abort;
+	case HLUA_E_BTMOUT:
+		SEND_ERR(NULL, "Lua task: burst timeout.\n");
+		goto err_task_abort;
 	case HLUA_E_ERRMSG:
 		hlua_lock(hlua);
 		SEND_ERR(NULL, "Lua task: %s.\n", hlua_tostring_safe(hlua->T, -1));
@@ -9309,6 +9491,10 @@ static void hlua_event_handler(struct hlua *hlua)
 	/* finished with error. */
 	case HLUA_E_ETMOUT:
 		SEND_ERR(NULL, "Lua event_hdl: execution timeout.\n");
+		break;
+
+	case HLUA_E_BTMOUT:
+		SEND_ERR(NULL, "Lua event_hdl: burst timeout.\n");
 		break;
 
 	case HLUA_E_ERRMSG:
@@ -9622,19 +9808,11 @@ static struct task *hlua_event_runner(struct task *task, void *context, unsigned
 		event_hdl_pause(hlua_sub->sub);
 		hlua_sub->paused = 1;
 
-		if (SET_SAFE_LJMP(hlua_sub->hlua)) {
-			/* The following Lua call may fail. */
-			trace = hlua_traceback(hlua_sub->hlua->T, ", ");
-			/* At this point the execution is safe. */
-			RESET_SAFE_LJMP(hlua_sub->hlua);
-		} else {
-			/* Lua error was raised while fetching lua trace from current ctx */
-			SEND_ERR(NULL, "Lua event_hdl: unexpected error (memory failure?).\n");
-		}
+		trace = hlua_traceback(hlua_sub->hlua->T, ", ");
+
 		ha_warning("Lua event_hdl: pausing the subscription because the handler fails "
 			   "to keep up the pace (%u unconsumed events) from %s.\n",
-			   event_hdl_async_equeue_size(&hlua_sub->equeue),
-			   (trace) ? trace : "[unknown]");
+			   event_hdl_async_equeue_size(&hlua_sub->equeue), trace);
 	}
 
 	if (HLUA_IS_RUNNING(hlua_sub->hlua)) {
@@ -10037,6 +10215,10 @@ static int hlua_sample_conv_wrapper(const struct arg *arg_p, struct sample *smp,
 		SEND_ERR(stream->be, "Lua converter '%s': execution timeout.\n", fcn->name);
 		return 0;
 
+	case HLUA_E_BTMOUT:
+		SEND_ERR(stream->be, "Lua converter '%s': burst timeout.\n", fcn->name);
+		return 0;
+
 	case HLUA_E_NOMEM:
 		SEND_ERR(stream->be, "Lua converter '%s': out of memory error.\n", fcn->name);
 		return 0;
@@ -10170,6 +10352,10 @@ static int hlua_sample_fetch_wrapper(const struct arg *arg_p, struct sample *smp
 
 	case HLUA_E_ETMOUT:
 		SEND_ERR(smp->px, "Lua sample-fetch '%s': execution timeout.\n", fcn->name);
+		return 0;
+
+	case HLUA_E_BTMOUT:
+		SEND_ERR(smp->px, "Lua sample-fetch '%s': burst timeout.\n", fcn->name);
 		return 0;
 
 	case HLUA_E_NOMEM:
@@ -10530,6 +10716,10 @@ static enum act_return hlua_action(struct act_rule *rule, struct proxy *px,
 		SEND_ERR(px, "Lua function '%s': execution timeout.\n", rule->arg.hlua_rule->fcn->name);
 		goto end;
 
+	case HLUA_E_BTMOUT:
+		SEND_ERR(px, "Lua function '%s': burst timeout.\n", rule->arg.hlua_rule->fcn->name);
+		goto end;
+
 	case HLUA_E_NOMEM:
 		SEND_ERR(px, "Lua function '%s': out of memory error.\n", rule->arg.hlua_rule->fcn->name);
 		goto end;
@@ -10707,6 +10897,11 @@ void hlua_applet_tcp_fct(struct appctx *ctx)
 
 	case HLUA_E_ETMOUT:
 		SEND_ERR(px, "Lua applet tcp '%s': execution timeout.\n",
+		         rule->arg.hlua_rule->fcn->name);
+		goto error;
+
+	case HLUA_E_BTMOUT:
+		SEND_ERR(px, "Lua applet tcp '%s': burst timeout.\n",
 		         rule->arg.hlua_rule->fcn->name);
 		goto error;
 
@@ -10920,6 +11115,11 @@ void hlua_applet_http_fct(struct appctx *ctx)
 
 		case HLUA_E_ETMOUT:
 			SEND_ERR(px, "Lua applet http '%s': execution timeout.\n",
+				 rule->arg.hlua_rule->fcn->name);
+			goto error;
+
+		case HLUA_E_BTMOUT:
+			SEND_ERR(px, "Lua applet http '%s': burst timeout.\n",
 				 rule->arg.hlua_rule->fcn->name);
 			goto error;
 
@@ -11547,17 +11747,22 @@ static int hlua_cli_io_handler_fct(struct appctx *appctx)
 		return 1;
 
 	case HLUA_E_ETMOUT:
-		SEND_ERR(NULL, "Lua converter '%s': execution timeout.\n",
+		SEND_ERR(NULL, "Lua cli '%s': execution timeout.\n",
+		         fcn->name);
+		return 1;
+
+	case HLUA_E_BTMOUT:
+		SEND_ERR(NULL, "Lua cli '%s': burst timeout.\n",
 		         fcn->name);
 		return 1;
 
 	case HLUA_E_NOMEM:
-		SEND_ERR(NULL, "Lua converter '%s': out of memory error.\n",
+		SEND_ERR(NULL, "Lua cli '%s': out of memory error.\n",
 		         fcn->name);
 		return 1;
 
 	case HLUA_E_YIELD: /* unexpected */
-		SEND_ERR(NULL, "Lua converter '%s': yield not allowed.\n",
+		SEND_ERR(NULL, "Lua cli '%s': yield not allowed.\n",
 		         fcn->name);
 		return 1;
 
@@ -12004,6 +12209,10 @@ static int hlua_filter_new(struct stream *s, struct filter *filter)
 		SEND_ERR(s->be, "Lua filter '%s' : 'new' execution timeout.\n", conf->reg->name);
 		ret = 0;
 		goto end;
+	case HLUA_E_BTMOUT:
+		SEND_ERR(s->be, "Lua filter '%s' : 'new' burst timeout.\n", conf->reg->name);
+		ret = 0;
+		goto end;
 	case HLUA_E_NOMEM:
 		SEND_ERR(s->be, "Lua filter '%s' : out of memory error.\n", conf->reg->name);
 		ret = 0;
@@ -12202,6 +12411,9 @@ static int hlua_filter_callback(struct stream *s, struct filter *filter, const c
 		goto end;
 	case HLUA_E_ETMOUT:
 		SEND_ERR(s->be, "Lua filter '%s' : '%s' callback execution timeout.\n", conf->reg->name, fun);
+		goto end;
+	case HLUA_E_BTMOUT:
+		SEND_ERR(s->be, "Lua filter '%s' : '%s' callback burst timeout.\n", conf->reg->name, fun);
 		goto end;
 	case HLUA_E_NOMEM:
 		SEND_ERR(s->be, "Lua filter '%s' : out of memory error.\n", conf->reg->name);
@@ -12948,8 +13160,10 @@ __LJMP static int hlua_ckch_commit_yield(lua_State *L, int status, lua_KContext 
 	list_for_each_entry_from(ckchi, &old_ckchs->ckch_inst, by_ckchs) {
 		struct ckch_inst *new_inst;
 
-		/* it takes a lot of CPU to creates SSL_CTXs, so we yield every 10 CKCH instances */
-		if (y % 10 == 0) {
+		/* it takes a lot of CPU to creates SSL_CTXs, so we yield every 10 CKCH instances
+		 * during runtime
+		 */
+		if (hlua && (y % 10) == 0) {
 
 			*lua_ckchi = ckchi;
 
@@ -12977,8 +13191,9 @@ __LJMP static int hlua_ckch_commit_yield(lua_State *L, int status, lua_KContext 
 error:
 	ckch_store_free(new_ckchs);
 	HA_SPIN_UNLOCK(CKCH_LOCK, &ckch_lock);
-	WILL_LJMP(luaL_error(L, "%s", err));
+	hlua_pushfstring_safe(L, "%s", err);
 	free(err);
+	WILL_LJMP(lua_error(L));
 
 	return 0;
 }
@@ -13012,6 +13227,14 @@ __LJMP static int hlua_ckch_set(lua_State *L)
 		WILL_LJMP(luaL_error(L, "'CertCache.set' needs a table as argument"));
 
 	hlua = hlua_gethlua(L);
+	if (hlua && HLUA_CANT_YIELD(hlua)) {
+		/* using hlua_ckch_set() during runtime from a context that
+		 * doesn't allow yielding (e.g.: fetches) is not supported
+		 * as it may cause contention.
+		 */
+		WILL_LJMP(luaL_error(L, "Cannot use CertCache.set from a "
+		                        "non-yield capable runtime context"));
+	}
 
 	/* FIXME: this should not return an error but should come back later */
 	if (HA_SPIN_TRYLOCK(CKCH_LOCK, &ckch_lock))
@@ -13094,15 +13317,28 @@ __LJMP static int hlua_ckch_set(lua_State *L)
 	lua_ckchi = lua_newuserdata(L, sizeof(struct ckch_inst *));
 	*lua_ckchi = NULL;
 
-	task_wakeup(hlua->task, TASK_WOKEN_MSG);
-	MAY_LJMP(hlua_yieldk(L, 0, 0, hlua_ckch_commit_yield, TICK_ETERNITY, 0));
+	if (hlua) {
+		/* yield right away to let hlua_ckch_commit_yield() benefit from
+		 * a fresh task cycle on next wakeup
+		 */
+		task_wakeup(hlua->task, TASK_WOKEN_MSG);
+		MAY_LJMP(hlua_yieldk(L, 0, 0, hlua_ckch_commit_yield, TICK_ETERNITY, 0));
+	} else {
+		/* body/init context: yielding not available, perform the commit as a
+		 * 1-shot operation (may be slow, but haproxy process is starting so
+		 * it is acceptable)
+		 */
+		hlua_ckch_commit_yield(L, LUA_OK, 0);
+	}
 
 end:
 	HA_SPIN_UNLOCK(CKCH_LOCK, &ckch_lock);
 
 	if (errcode & ERR_CODE) {
 		ckch_store_free(new_ckchs);
-		WILL_LJMP(luaL_error(L, "%s", err));
+		hlua_pushfstring_safe(L, "%s", err);
+		free(err);
+		WILL_LJMP(lua_error(L));
 	}
 	free(err);
 
@@ -13627,7 +13863,7 @@ lua_State *hlua_init_state(int thread_num)
 	lua_newtable(L);
 	/* Register */
 	hlua_class_function(L, "set",         hlua_ckch_set);
-	lua_setglobal(L, CLASS_CERTCACHE); /* Create global object called Regex */
+	lua_setglobal(L, CLASS_CERTCACHE); /* Create global object called CertCache */
 
 	/*
 	 *

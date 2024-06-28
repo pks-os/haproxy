@@ -2,8 +2,8 @@
                                 HAProxy
                           Configuration Manual
                          ----------------------
-                              version 3.0
-                              2024/04/27
+                              version 3.1
+                              2024/06/14
 
 
 This document covers the configuration language as implemented in the version
@@ -60,6 +60,7 @@ Summary
 3.10.     Log forwarding
 3.11.     HTTPClient tuning
 3.12.     Certificate Storage
+3.12.1.       Load options
 
 4.    Proxies
 4.1.      Proxy keywords matrix
@@ -113,6 +114,7 @@ Summary
 8.3.2.        Logging before waiting for the stream to terminate
 8.3.3.        Raising log level upon errors
 8.3.4.        Disabling logging of successful connections
+8.3.5.        Log profiles
 8.4.      Timing events
 8.5.      Stream state at disconnection
 8.6.      Non-printable characters
@@ -261,7 +263,8 @@ is called "head of line blocking" or "HoL blocking" or sometimes just "HoL".
 HTTP/3 is implemented over QUIC, itself implemented over UDP. QUIC solves the
 head of line blocking at the transport level by means of independently handled
 streams. Indeed, when experiencing loss, an impacted stream does not affect the
-other streams, and all of them can be accessed in parallel.
+other streams, and all of them can be accessed in parallel. QUIC also provides
+connection migration support but currently haproxy does not support it.
 
 By default HAProxy operates in keep-alive mode with regards to persistent
 connections: for each connection it processes each request and response, and
@@ -1275,6 +1278,8 @@ The following keywords are supported in the "global" section :
    - h1-case-adjust-file
    - h2-workaround-bogus-websocket-clients
    - hard-stop-after
+   - harden.reject-privileged-ports.tcp
+   - harden.reject-privileged-ports.quic
    - insecure-fork-wanted
    - insecure-setuid-wanted
    - issuers-chain-path
@@ -1290,7 +1295,11 @@ The following keywords are supported in the "global" section :
    - nbthread
    - node
    - numa-cpu-mapping
+   - ocsp-update.disable
+   - ocsp-update.maxdelay
+   - ocsp-update.mindelay
    - ocsp-update.httpproxy
+   - ocsp-update.mode
    - pidfile
    - pp2-never-send-local
    - presetenv
@@ -1406,6 +1415,7 @@ The following keywords are supported in the "global" section :
    - tune.pt.zero-copy-forwarding
    - tune.quic.cc-hystart
    - tune.quic.frontend.conn-tx-buffers.limit
+   - tune.quic.frontend.glitches-threshold
    - tune.quic.frontend.max-idle-timeout
    - tune.quic.frontend.max-streams-bidi
    - tune.quic.max-frame-loss
@@ -1436,8 +1446,8 @@ The following keywords are supported in the "global" section :
    - tune.ssl.lifetime
    - tune.ssl.maxrecord
    - tune.ssl.ssl-ctx-cache-size
-   - tune.ssl.ocsp-update.maxdelay
-   - tune.ssl.ocsp-update.mindelay
+   - tune.ssl.ocsp-update.maxdelay (deprecated)
+   - tune.ssl.ocsp-update.mindelay (deprecated)
    - tune.vars.global-max-size
    - tune.vars.proc-max-size
    - tune.vars.reqres-max-size
@@ -1938,6 +1948,14 @@ hard-stop-after <time>
 
   See also: grace
 
+harden.reject-privileged-ports.tcp { on | off }
+harden.reject-privileged-ports.quic { on | off }
+  Toggle per protocol protection which forbid communication with clients which
+  use privileged ports as their source port. This range of ports is defined
+  according to RFC 6335. By default, protection is active for QUIC protocol as
+  this behavior is suspicious and may be used as a spoofing or DNS/NTP
+  amplification attack.
+
 http-err-codes [+-]<range>[,...] [...]
   Replace, reduce or extend the list of status codes that define an error as
   considered by the termination codes and the "http_err_cnt" counter in stick
@@ -2042,7 +2060,7 @@ localpeer <name>
   See also "-L" in the management guide and "peers" section below.
 
 log <target> [len <length>] [format <format>] [sample <ranges>:<sample_size>]
-    <facility> [max level [min level]]
+    [profile <prof>] <facility> [max level [min level]]
   Adds a global syslog server. Several global servers can be defined. They
   will receive logs for starts and exits, as well as all logs from proxies
   configured with "log global". See "log" option for proxies for more details.
@@ -2150,7 +2168,8 @@ nbthread <number>
   bound to upon startup. This means that the thread count can easily be
   adjusted from the calling process using commands like "taskset" or "cpuset".
   Otherwise, this value defaults to 1. The default value is reported in the
-  output of "haproxy -vv".
+  output of "haproxy -vv". Note that values set here or automatically detected
+  are subject to the limit set by "thread-hard-limit" (if set).
 
 no-quic
   Disable QUIC transport protocol. All the QUIC listeners will still be created.
@@ -2169,10 +2188,39 @@ numa-cpu-mapping
   already specified, for example via the 'cpu-map' directive or the taskset
   utility.
 
+ocsp-update.disable [ on | off ]
+  Disable completely the ocsp-update in HAProxy. Any ocsp-update configuration
+  will be ignored. Default is "off".
+  See option "ocsp-update" for more information about the auto update
+  mechanism.
+
 ocsp-update.httpproxy <address>[:port]
   Allow to use an HTTP proxy for the OCSP updates. This only works with HTTP,
   HTTPS is not supported. This option will allow the OCSP updater to send
   absolute URI in the request to the proxy.
+
+ocsp-update.maxdelay <number>
+tune.ssl.ocsp-update.maxdelay <number> (deprecated)
+  Sets the maximum interval between two automatic updates of the same OCSP
+  response. This time is expressed in seconds and defaults to 3600 (1 hour). It
+  must be set to a higher value than "ocsp-update.mindelay". See
+  option "ocsp-update" for more information about the auto update mechanism.
+
+ocsp-update.mindelay <number>
+tune.ssl.ocsp-update.mindelay <number> (deprecated)
+  Sets the minimum interval between two automatic updates of the same OCSP
+  response. This time is expressed in seconds and defaults to 300 (5 minutes).
+  It is particularly useful for OCSP response that do not have explicit
+  expiration times. It must be set to a lower value than
+  "ocsp-update.maxdelay". See option "ocsp-update" for more
+  information about the auto update mechanism.
+
+ocsp-update.mode [ on | off ]
+  Sets the default ocsp-update mode for all certificates used in the
+  configuration. This global option can be superseded by the crt-list
+  "ocsp-update" option. This option is set to "off" by default.
+  See option "ocsp-update" for more information about the auto update
+  mechanism.
 
 pidfile <pidfile>
   Writes PIDs of all daemons into file <pidfile> when daemon mode or writes PID
@@ -2279,7 +2327,7 @@ set-var-fmt <var-name> <fmt>
   are only those using internal data, typically 'int(value)' or 'str(value)'.
   It is possible to reference previously allocated variables as well. These
   variables will then be readable (and modifiable) from the regular rule sets.
-  Please see section 8.2.4 for details on the log-format syntax.
+  Please see section 8.2.6 for details on the Custom log format syntax.
 
   Example:
       global
@@ -2700,6 +2748,19 @@ thread-groups <number>
   since up to 64 threads per group may be configured. The maximum number of
   groups is configured at compile time and defaults to 16. See also "nbthread".
 
+thread-hard-limit <number>
+  This setting is used to enforce a limit to the number of threads, either
+  detected, or configured. This is particularly useful on operating systems
+  where the number of threads is automatically detected, where a number of
+  threads lower than the number of CPUs is desired in generic and portable
+  configurations. Indeed, while "nbthread" enforces a number of threads that
+  will result in a warning and bad performance if higher than CPUs available,
+  thread-hard-limit will only cap the maximum value and automatically limit
+  the number of threads to no higher than this value, but will not raise lower
+  values. If "nbthread" is forced to a higher value, thread-hard-limit wins,
+  and a warning is emitted in so that the configuration anomaly can be
+  fixed. By default there is no limit. See also "nbthread".
+
 trace <args...>
   This command configures one "trace" subsystem statement. Each of them can be
   found in the management manual, and follow the exact same syntax. Only one
@@ -3104,26 +3165,24 @@ tune.applet.zero-copy-forwarding { on | off }
 
 tune.buffers.limit <number>
   Sets a hard limit on the number of buffers which may be allocated per process.
-  The default value is zero which means unlimited. The minimum non-zero value
-  will always be greater than "tune.buffers.reserve" and should ideally always
-  be about twice as large. Forcing this value can be particularly useful to
-  limit the amount of memory a process may take, while retaining a sane
-  behavior. When this limit is reached, streams which need a buffer wait for
-  another one to be released by another stream. Since buffers are dynamically
-  allocated and released, the waiting time is very short and not perceptible
-  provided that limits remain reasonable. In fact sometimes reducing the limit
-  may even increase performance by increasing the CPU cache's efficiency. Tests
-  have shown good results on average HTTP traffic with a limit to 1/10 of the
-  expected global maxconn setting, which also significantly reduces memory
-  usage. The memory savings come from the fact that a number of connections
-  will not allocate 2*tune.bufsize. It is best not to touch this value unless
-  advised to do so by an HAProxy core developer.
+  The default value is zero which means unlimited. The limit will automatically
+  be re-adjusted to satisfy the reserved buffers for emergency situations so
+  that the user doesn't have to perform complicated calculations. Forcing this
+  value can be particularly useful to limit the amount of memory a process may
+  take, while retaining a sane behavior. When this limit is reached, a task
+  that requests a buffer waits for another one to be released first. Most of
+  the time the waiting time is very short and not perceptible provided that
+  limits remain reasonable. However, some historical limitations have weakened
+  this mechanism over versions and it is known that in certain situations of
+  sustained shortage, some tasks may freeze until their timeout expires, so it
+  is safer to avoid using this when not strictly necessary.
 
 tune.buffers.reserve <number>
-  Sets the number of buffers which are pre-allocated and reserved for use only
-  during memory shortage conditions resulting in failed memory allocations. The
-  minimum value is 2 and is also the default. There is no reason a user would
-  want to change this value, it's mostly aimed at HAProxy core developers.
+  Sets the number of per-thread buffers which are pre-allocated and reserved
+  for use only during memory shortage conditions resulting in failed memory
+  allocations. The minimum value is 0 and the default is 4. There is no reason
+  a user would want to change this value, unless a core developer suggests to
+  change it for a very specific reason.
 
 tune.bufsize <number>
   Sets the buffer size to this size (in bytes). Lower values allow more
@@ -3458,10 +3517,17 @@ tune.lua.forced-yield <number>
   This directive forces the Lua engine to execute a yield each <number> of
   instructions executed. This permits interrupting a long script and allows the
   HAProxy scheduler to process other tasks like accepting connections or
-  forwarding traffic. The default value is 10000 instructions. If HAProxy often
-  executes some Lua code but more responsiveness is required, this value can be
-  lowered. If the Lua code is quite long and its result is absolutely required
-  to process the data, the <number> can be increased.
+  forwarding traffic. The default value is 10000 instructions for scripts loaded
+  using "lua-load-per-thread" and MAX(500, 10000 / nbthread) instructions for
+  scripts loaded using "lua-load" (it was found to be an optimal value for
+  performance while taking care of not creating thread contention with multiple
+  threads competing for the global lua lock).
+
+  If HAProxy often executes some Lua code but more responsiveness is required,
+  this value can be lowered. If the Lua code is quite long and its result is
+  absolutely required to process the data, the <number> can be increased, but
+  the value should be set wisely as in multithreading context it could increase
+  contention.
 
 tune.lua.maxmem <number>
   Sets the maximum amount of RAM in megabytes per process usable by Lua. By
@@ -3690,6 +3756,18 @@ tune.quic.frontend.conn-tx-buffers.limit <number>
   drained on ACK reception. This setting has a direct impact on the throughput
   and memory consumption and can be adjusted according to an estimated round
   time-trip. Each buffer is tune.bufsize.
+
+tune.quic.frontend.glitches-threshold <number>
+  Sets the threshold for the number of glitches on a frontend connection, where
+  that connection will automatically be killed. This allows to automatically
+  kill misbehaving connections without having to write explicit rules for them.
+  The default value is zero, indicating that no threshold is set so that no
+  event will cause a connection to be closed. Beware that some QUIC clients may
+  occasionally cause a few glitches over long lasting connection, so any non-
+  zero value here should probably be in the hundreds or thousands to be
+  effective without affecting slightly bogus clients.
+
+  See also: fc_glitches
 
 tune.quic.frontend.max-idle-timeout <timeout>
   Sets the QUIC max_idle_timeout transport parameters in milliseconds for
@@ -3992,29 +4070,6 @@ tune.ssl.ssl-ctx-cache-size <number>
   entries. This is a LRU cache. Because generating a SSL certificate
   dynamically is expensive, they are cached. The default cache size is set to
   1000 entries.
-
-tune.ssl.ocsp-update.maxdelay <number>
-  Sets the maximum interval between two automatic updates of the same OCSP
-  response. This time is expressed in seconds and defaults to 3600 (1 hour). It
-  must be set to a higher value than "tune.ssl.ocsp-update.mindelay". See
-  option "ocsp-update" for more information about the auto update mechanism.
-
-tune.ssl.ocsp-update.mindelay <number>
-  Sets the minimum interval between two automatic updates of the same OCSP
-  response. This time is expressed in seconds and defaults to 300 (5 minutes).
-  It is particularly useful for OCSP response that do not have explicit
-  expiration times. It must be set to a lower value than
-  "tune.ssl.ocsp-update.maxdelay". See option "ocsp-update" for more
-  information about the auto update mechanism.
-
-tune.ssl.ocsp-update.mode [ on | off ]
-  Sets the default ocsp-update mode for all certificates used in the
-  configuration. This global option can be superseded by the crt-list
-  "ocsp-update" option but an error will be raised if a given certificate has
-  two distinct configurations simultaneously. This option is set to "off" by
-  default.
-  See option "ocsp-update" for more information about the auto update
-  mechanism.
 
 tune.stick-counters <number>
   Sets the number of stick-counters that may be tracked at the same time by a
@@ -4754,7 +4809,7 @@ httpclient.timeout.connect <timeout>
 3.12. Certificate Storage
 -------------------------
 
-HAProxy uses an internal storage mecanism to load and store certificates used
+HAProxy uses an internal storage mechanism to load and store certificates used
 in the configuration. This storage can be configured by using a "crt-store"
 section. It allows to configure certificate definitions and which files should
 be loaded in it. A certificate definition must be written before it is used
@@ -4786,39 +4841,8 @@ key-base <dir>
   section is ignored.
 
 load [crt <filename>] [param*]
-  Load SSL files in the certificate storage.
-
-  Arguments:
-
-    alias <string>     Optional argument. Allow to name the certificate with an
-                       alias, so it can be referenced with it in the
-                       configuration. An alias must be prefixed with '@/' when
-                       called elsewhere in the configuration.
-
-    crt <filename>     This argument is mandatory, it loads a PEM which must
-                       contain the public certificate but could also contain
-                       the intermediate certificates and the private key.
-                       If no private key is provided in this file, a key can be
-                       provided with the "key" keyword.
-
-    key <filename>     This argument is optional. Load a private key in PEM
-                       format. If a private key was already defined in "crt",
-                       it will overwrite it.
-
-    ocsp <filename>    This argument is optional, it loads an OCSP response in
-                       DER format. It can be updated with the CLI.
-
-    issuer <filename>  This argument is optional. Load the OCSP issuer in PEM
-                       format. In order to identify which certificate an OCSP
-                       Response applies to, the issuer's certificate is necessary.
-                       If the issuer's certificate is not found in the "crt" file,
-                       it could be loaded from a file with this argument.
-
-    sctl <filename>    This argument is optional. Support for Certificate
-                       Transparency (RFC6962) TLS extension is enabled. The file
-                       must contain a valid Signed Certificate Timestamp List,
-                       as described in RFC. File is parsed to check basic syntax,
-                       but no signatures are verified.
+  Load SSL files in the certificate storage. For the parameter list, see section
+  "3.12.1. Load options"
 
 Example:
 
@@ -4837,6 +4861,139 @@ Example:
 
     frontend in2
         bind *:443 ssl crt "@web/site1" crt "site2.crt"  crt "@web/site3" crt "@web/site4.crt"
+
+3.12.1. Load options
+--------------------
+
+Load SSL files in the certificate storage. The load keyword can take multiple
+parameters which are listed below. These keywords are also usable in a
+crt-list.
+
+crt <filename>
+  This argument is mandatory, it loads a PEM which must contain the public
+  certificate but could also contain the intermediate certificates and the
+  private key.  If no private key is provided in this file, a key can be provided
+  with the "key" keyword.
+
+alias <string>
+  Optional argument. Allow to name the certificate with an alias, so it can be
+  referenced with it in the configuration. An alias must be prefixed with '@/'
+  when called elsewhere in the configuration.
+
+key <filename>
+  This argument is optional. Load a private key in PEM format. If a private key
+  was already defined in "crt", it will overwrite it.
+
+ocsp <filename>
+  This argument is optional, it loads an OCSP response in DER format. It can
+  be updated with the CLI.
+
+issuer <filename>
+  This argument is optional. Load the OCSP issuer in PEM format. In order to
+  identify which certificate an OCSP Response applies to, the issuer's
+  certificate is necessary.  If the issuer's certificate is not found in the
+  "crt" file, it could be loaded from a file with this argument.
+
+sctl <filename>
+  This argument is optional. Support for Certificate Transparency (RFC6962) TLS
+  extension is enabled. The file must contain a valid Signed Certificate
+  Timestamp List, as described in RFC. File is parsed to check basic syntax,
+  but no signatures are verified.
+
+ocsp-update [ off | on ]
+  Enable automatic OCSP response update when set to 'on', disable it otherwise.
+  Its value defaults to 'off'.
+  To enable the OCSP auto update on a bind line, you can use this option in a
+  crt-store or you can use the global option "tune.ocsp-update.mode".
+  If a given certificate is used in multiple crt-lists with different values of
+  the 'ocsp-update' set, an error will be raised. Likewise, if a certificate
+  inherits from the global option on a bind line and has an incompatible
+  explicit 'ocsp-update' option set in a crt-list, the same error will be
+  raised.
+
+  Examples:
+
+  Here is an example configuration enabling it with a crt-list:
+
+  haproxy.cfg:
+      frontend fe
+          bind :443 ssl crt-list haproxy.list
+
+  haproxy.list:
+      server_cert.pem [ocsp-update on] foo.bar
+
+  Here is an example configuration enabling it with a crt-store:
+
+  haproxy.cfg:
+
+      crt-store
+        load crt foobar.pem ocsp-update on
+
+      frontend fe
+          bind :443 ssl crt foobar.pem
+
+  When the option is set to 'on', we will try to get an ocsp response whenever
+  an ocsp uri is found in the frontend's certificate. The only limitation of
+  this mode is that the certificate's issuer will have to be known in order for
+  the OCSP certid to be built.
+  Each OCSP response will be updated at least once an hour, and even more
+  frequently if a given OCSP response has an expire date earlier than this one
+  hour limit. A minimum update interval of 5 minutes will still exist in order
+  to avoid updating too often responses that have a really short expire time or
+  even no 'Next Update' at all. Because of this hard limit, please note that
+  when auto update is set to 'on', any OCSP response loaded during init will
+  not be updated until at least 5 minutes, even if its expire time ends before
+  now+5m. This should not be too much of a hassle since an OCSP response must
+  be valid when it gets loaded during init (its expire time must be in the
+  future) so it is unlikely that this response expires in such a short time
+  after init.
+  On the other hand, if a certificate has an OCSP uri specified and no OCSP
+  response, setting this option to 'on' for the given certificate will ensure
+  that the OCSP response gets fetched automatically right after init.
+  The default minimum and maximum delays (5 minutes and 1 hour respectively)
+  can be configured by the "ocsp-update.maxdelay" and "ocsp-update.mindelay"
+  global options.
+
+  Whenever an OCSP response is updated by the auto update task or following a
+  call to the "update ssl ocsp-response" CLI command, a dedicated log line is
+  emitted. It follows a dedicated format that contains the following header
+  "<OCSP-UPDATE>" and is followed by specific OCSP-related information:
+    - the path of the corresponding frontend certificate
+    - a numerical update status
+    - a textual update status
+    - the number of update failures for the given response
+    - the number of update successes for the givan response
+  See "show ssl ocsp-updates" CLI command for a full list of error codes and
+  error messages. This line is emitted regardless of the success or failure of
+  the concerned OCSP response update.
+  The OCSP request/response is sent and received through an http_client
+  instance that has the dontlog-normal option set and that uses the regular
+  HTTP log format in case of error (unreachable OCSP responder for instance).
+  If such an error occurs, another log line that contains HTTP-related
+  information will then be emitted alongside the "regular" OCSP one (which will
+  likely have "HTTP error" as text status). But if a purely HTTP error happens
+  (unreachable OCSP responder for instance), an extra log line that follows the
+  regular HTTP log-format will be emitted.
+  Here are two examples of such log lines, with a successful OCSP update log
+  line first and then an example of an HTTP error with the two different lines
+  (lines were spit and the URL was shortened for readability):
+    <133>Mar  6 11:16:53 haproxy[14872]: <OCSP-UPDATE> /path_to_cert/foo.pem 1 \
+            "Update successful" 0 1
+
+    <133>Mar  6 11:18:55 haproxy[14872]: <OCSP-UPDATE> /path_to_cert/bar.pem 2 \
+            "HTTP error" 1 0
+    <133>Mar  6 11:18:55 haproxy[14872]: -:- [06/Mar/2023:11:18:52.200] \
+            <OCSP-UPDATE> -/- 2/0/-1/-1/3009 503 217 - - SC-- 0/0/0/0/3 0/0 {} \
+            "GET http://127.0.0.1:12345/MEMwQT HTTP/1.1"
+
+  Troubleshooting:
+  A common error that can happen with let's encrypt certificates is if the DNS
+  resolution provides an IPv6 address and your system does not have a valid
+  outgoing IPv6 route. In such a case, you can either create the appropriate
+  route or set the "httpclient.resolvers.prefer ipv4" option in the global
+  section.
+  In case of "OCSP response check failure" error, you might want to check that
+  the issuer certificate that you provided is valid.
 
 4. Proxies
 ----------
@@ -5034,7 +5191,6 @@ filter                                    -          X         X         X
 fullconn                                  X          -         X         X
 guid                                      -          X         X         X
 hash-balance-factor                       X          -         X         X
-hash-key                                  X          -         X         X
 hash-type                                 X          -         X         X
 http-after-response                       X (!)      X         X         X
 http-check comment                        X          -         X         X
@@ -6667,7 +6823,7 @@ email-alert to <emailaddr>
              "email-alert myhostname", section 3.6 about mailers.
 
 
-error-log-format <string>
+error-log-format <fmt>
   Specifies the log format string to use in case of connection error on the frontend side.
 
   May be used in the following contexts: tcp, http
@@ -6682,8 +6838,8 @@ error-log-format <string>
   connection errors described in section 8.2.5.
 
   If the directive is used in a defaults section, all subsequent frontends will
-  use the same log format. Please see section 8.2.4 which covers the log format
-  string in depth.
+  use the same log format. Please see section 8.2.6 which covers the custom log
+  format string in depth.
 
   "error-log-format" directive overrides previous "error-log-format"
   directives.
@@ -6798,11 +6954,18 @@ fullconn <conns>
 
 
 guid <string>
-  Specify a case-sensitive global unique ID for this proxy. This must be unique
-  across all haproxy configuration on every object types. Format is left
-  unspecified to allow the user to select its naming policy. The only
-  restriction is its length which cannot be greater than 127 characters. All
-  alphanumerical values and '.', ':', '-' and '_' characters are valid.
+  Specify a case-sensitive global unique ID for this proxy.
+
+  May be used in the following contexts: tcp, http, log
+
+  May be used in sections :   defaults | frontend | listen | backend
+                                 no    |    yes   |   yes  |   yes
+
+  <string> must be unique across all haproxy configuration on every object
+  types. Format is left unspecified to allow the user to select its naming
+  policy. The only restriction is its length which cannot be greater than
+  127 characters. All alphanumerical values and '.', ':', '-' and '_'
+  characters are valid.
 
 
 hash-balance-factor <factor>
@@ -6836,29 +6999,6 @@ hash-balance-factor <factor>
   consistent hashing mechanism.
 
   See also : "balance" and "hash-type".
-
-
-hash-key <key>
-  Specify how "hash-type consistent" node keys are computed
-
-  Arguments :
-    <key>   <key> may be one of the following :
-
-      id         The node keys will be derived from the server's numeric
-                 identifier as set from "id" or which defaults to its position
-                 in the server list.
-
-      addr       The node keys will be derived from the server's address, when
-                 available, or else fall back on "id".
-
-      addr-port  The node keys will be derived from the server's address and
-                 port, when available, or else fall back on "id".
-
-  The "addr" and "addr-port" options may be useful in scenarios where multiple
-  HAProxy processes are balancing traffic to the same set of servers. If the
-  server order of each process is different (because, for example, DNS records
-  were resolved in different orders) then this will allow each independent
-  HAProxy processes to agree on routing decisions.
 
 
 hash-type <method> <function> <modifier>
@@ -7191,12 +7331,13 @@ http-check expect [min-recv <int>] [comment <msg>]
     on-success <fmt>   is optional and can be used to customize the
                        informational message reported in logs if the expect
                        rule is successfully evaluated and if it is the last rule
-                       in the tcp-check ruleset. <fmt> is a log-format string.
+                       in the tcp-check ruleset. <fmt> is a Custom log format
+                       string (see section 8.2.6).
 
     on-error <fmt>     is optional and can be used to customize the
                        informational message reported in logs if an error
                        occurred during the expect rule evaluation. <fmt> is a
-                       log-format string.
+                       Custom log format string (see section 8.2.6).
 
     <match>   is a keyword indicating how to look for a specific pattern in the
               response. The keyword may be one of "status", "rstatus", "hdr",
@@ -7242,17 +7383,18 @@ http-check expect [min-recv <int>] [comment <msg>]
                       match), "end" (suffix match), "sub" (substring match) or
                       "reg" (regex match). If not specified, exact matching
                       method is used. If the "name-lf" parameter is used,
-                      <name> is evaluated as a log-format string. If "value-lf"
-                      parameter is used, <value> is evaluated as a log-format
-                      string. These parameters cannot be used with the regex
-                      matching method. Finally, the header value is considered
-                      as comma-separated list. Note that matchings are case
-                      insensitive on the header names.
+                      <name> is evaluated as a Custom log format string (see
+                      section 8.2.6). If "value-lf" parameter is used, <value>
+                      is evaluated as a log-format string. These parameters
+                      cannot be used with the regex matching method. Finally,
+                      the header value is considered as comma-separated
+                      list. Note that matchings are case insensitive on the
+                      header names.
 
     fhdr { name | name-lf } [ -m <meth> ] <name>
          [ { value | value-lf } [ -m <meth> ] <value> :
                       test the specified full header pattern on the HTTP
-                      response headers. It does exactly the same than "hdr"
+                      response headers. It does exactly the same as the "hdr"
                       keyword, except the full header value is tested, commas
                       are not considered as delimiters.
 
@@ -7275,12 +7417,13 @@ http-check expect [min-recv <int>] [comment <msg>]
                       of a dynamic page, or to detect a failure when a specific
                       error appears on the check page (e.g. a stack trace).
 
-    string-lf <fmt> : test a log-format string match in the HTTP response body.
-                      A health check response will be considered valid if the
-                      response's body contains the  string resulting of the
-                      evaluation of <fmt>, which follows the log-format rules.
-                      If prefixed with "!", then the response will be
-                      considered invalid if the body contains the string.
+    string-lf <fmt> : test a Custom log format string (see section 8.2.6) match
+                      in the HTTP response body. A health check response will
+                      be considered valid if the response's body contains the
+                      string resulting of the evaluation of <fmt>, which
+                      follows the log-format rules. If prefixed with "!", then
+                      the response will be considered invalid if the body
+                      contains the string.
 
   It is important to note that the responses will be limited to a certain size
   defined by the global "tune.bufsize" option, which defaults to 16384 bytes.
@@ -7346,9 +7489,10 @@ http-check send [meth <method>] [{ uri <uri> | uri-lf <fmt> }>] [ver <version>]
                    other URI. Query strings are permitted.
 
     uri-lf <fmt>   is optional and set the URI referenced in the HTTP requests
-                   using the log-format string <fmt>. It defaults to "/" which
-                   is accessible by default on almost any server, but may be
-                   changed to any other URI. Query strings are permitted.
+                   using the Custom log format <fmt> (see section 8.2.6). It
+                   defaults to "/" which is accessible by default on almost any
+                   server, but may be changed to any other URI. Query strings
+                   are permitted.
 
     ver <version>  is the optional HTTP version string. It defaults to
                    "HTTP/1.0" but some servers might behave incorrectly in HTTP
@@ -7358,16 +7502,16 @@ http-check send [meth <method>] [{ uri <uri> | uri-lf <fmt> }>] [ver <version>]
 
     hdr <name> <fmt>  adds the HTTP header field whose name is specified in
                       <name> and whose value is defined by <fmt>, which follows
-                      to the log-format rules.
+                      the Custom log format rules described in section 8.2.6.
 
     body <string>  add the body defined by <string> to the request sent during
                    HTTP health checks. If defined, the "Content-Length" header
                    is thus automatically added to the request.
 
-    body-lf <fmt>  add the body defined by the log-format string <fmt> to the
-                   request sent during HTTP health checks. If defined, the
-                   "Content-Length" header is thus automatically added to the
-                   request.
+    body-lf <fmt>  add the body defined by the Custom log format <fmt> (see
+                   section 8.2.6) to the request sent during HTTP health
+                   checks. If defined, the "Content-Length" header is thus
+                   automatically added to the request.
 
   In addition to the request line defined by the "option httpchk" directive,
   this one is the valid way to add some headers and optionally a body to the
@@ -7476,8 +7620,8 @@ http-check set-var-fmt(<var-name>[,<cond>...]) <fmt>
 
     <expr>      Is a sample-fetch expression potentially followed by converters.
 
-    <fmt>       This is the value expressed using log-format rules (see Custom
-                Log Format in section 8.2.4).
+    <fmt>       This is the value expressed using Custom log format (see Custom
+                Log Format in section 8.2.6).
 
   Examples :
         http-check set-var(check.port) int(1234)
@@ -7559,7 +7703,7 @@ http-error status <code> [content-type <type>]
                          file is not empty, its content-type must be set as
                          argument to "content-type", otherwise, any
                          "content-type" argument is ignored. <file> is
-                         evaluated as a log-format string.
+                         evaluated as a Custom log format (see section 8.2.6).
 
     lf-string <str>      specifies the log-format string to use as response
                          payload. The content-type must always be set as
@@ -7567,8 +7711,9 @@ http-error status <code> [content-type <type>]
 
     hdr <name> <fmt>     adds to the response the HTTP header field whose name
                          is specified in <name> and whose value is defined by
-                         <fmt>, which follows to the log-format rules.
-                         This parameter is ignored if an errorfile is used.
+                         <fmt>, which follows the Custom log format rules (see
+                         section 8.2.6). This parameter is ignored if an
+                         errorfile is used.
 
   This directive may be used instead of "errorfile", to define a custom error
   message. As "errorfile" directive, it is used for errors detected and
@@ -7724,12 +7869,29 @@ http-reuse { never | safe | aggressive | always }
   May be used in sections:   defaults | frontend | listen | backend
                                yes    |    no    |   yes  |   yes
 
-  By default, a connection established between HAProxy and the backend server
-  which is considered safe for reuse is moved back to the server's idle
-  connections pool so that any other request can make use of it. This is the
-  "safe" strategy below.
+  In order to avoid the cost of setting up new connections to backend servers
+  for each HTTP request, HAProxy tries to keep such idle connections opened
+  after being used. These connections are specific to a server and are stored
+  in a list called a pool, and are grouped together by a set of common key
+  properties. Subsequent HTTP requests will cause a lookup of a compatible
+  connection sharing identical properties in the associated pool and result in
+  this connection being reused instead of establishing a new one.
 
-  The argument indicates the desired connection reuse strategy :
+  A limit on the number of idle connections to keep on a server can be
+  specified via the "pool-max-conn" server keyword. Unused connections are
+  periodically purged according to the "pool-purge-delay" interval.
+
+  The following connection properties are used to determine if an idle
+  connection is eligible for reuse on a given request:
+  - source and destination addresses
+  - proxy protocol
+  - TOS and mark socket options
+  - connection name, determined either by the result of the evaluation of the
+    "pool-conn-name" expression if present, otherwise by the "sni" expression
+
+  In some occasions, connection lookup or reuse is not performed due to extra
+  restrictions. This is determined by the reuse strategy specified via the
+  keyword argument:
 
     - "never"  : idle connections are never shared between sessions. This mode
                  may be enforced to cancel a different strategy inherited from
@@ -7780,25 +7942,12 @@ http-reuse { never | safe | aggressive | always }
                  gains as "aggressive" but with more risks. It should only be
                  used when it improves the situation over "aggressive".
 
-  When http connection sharing is enabled, a great care is taken to respect the
-  connection properties and compatibility. Indeed, some properties are specific
-  and it is not possible to reuse it blindly. Those are the SSL SNI, source
-  and destination address, proxy protocol block as well as tos and mark
-  sockopts. A connection is reused only if it shares the same set of properties
-  with the request.
-
   Also note that connections with certain bogus authentication schemes (relying
   on the connection) like NTLM are marked private if possible and never shared.
   This won't be the case however when using a protocol with multiplexing
   abilities and using reuse mode level value greater than the default "safe"
   strategy as in this case nothing prevents the connection from being already
   shared.
-
-  A connection pool is involved and configurable with "pool-max-conn".
-
-  Note: connection reuse improves the accuracy of the "server maxconn" setting,
-  because almost no new connection will be established while idle connections
-  remain available. This is particularly true with the "always" strategy.
 
   The rules to decide to keep an idle connection opened or to close it after
   processing are also governed by the "tune.pool-low-fd-ratio" (default: 20%)
@@ -7812,13 +7961,14 @@ http-reuse { never | safe | aggressive | always }
   too few connections are kept open. It may be desirable in this case to adjust
   such thresholds or simply to increase the global "maxconn" value.
 
-  Similarly, when thread groups are explicitly enabled, it is important to
-  understand that idle connections are only usable between threads from a same
-  group. As such it may happen that unfair load between groups leads to more
-  idle connections being needed, causing a lower reuse rate. The same solution
-  may then be applied (increase global "maxconn" or increase pool ratios).
+  When thread groups are explicitly enabled, it is important to understand that
+  idle connections are only usable between threads from a same group. As such
+  it may happen that unfair load between groups leads to more idle connections
+  being needed, causing a lower reuse rate. The same solution may then be
+  applied (increase global "maxconn" or increase pool ratios).
 
-  See also : "option http-keep-alive", "server maxconn", "thread-groups",
+  See also : "option http-keep-alive", "pool-conn-name", "pool-max-conn",
+             "pool-purge-delay", "server maxconn", "sni", "thread-groups",
              "tune.pool-high-fd-ratio", "tune.pool-low-fd-ratio"
 
 
@@ -7992,7 +8142,7 @@ load-server-state-from-file { global | local | none }
 
 log global
 log <target> [len <length>] [format <format>] [sample <ranges>:<sample_size>]
-    <facility> [<level> [<minlevel>]]
+    [profile <prof>] <facility> [<level> [<minlevel>]]
 no log
   Enable per-instance logging of events and traffic.
 
@@ -8009,10 +8159,9 @@ no log
   Arguments :
     global     should be used when the instance's logging parameters are the
                same as the global ones. This is the most common usage. "global"
-               replaces <target>, <facility> and <level> with those of the log
-               entries found in the "global" section. Only one "log global"
-               statement may be used per instance, and this form takes no other
-               parameter.
+               replaces all log arguments with those of the log entries found
+               in the "global" section. Only one "log global" statement may be
+               used per instance, and this form takes no other parameter.
 
     <target>   indicates where to send the logs. It takes the same format as
                for the "global" section's logs, and can be one of :
@@ -8138,6 +8287,10 @@ no log
                 be used in containers or during development, where the severity
                 only depends on the file descriptor used (stdout/stderr).
 
+    <prof>     name of the optional "log-profile" section that will be
+               considered during the log building process to override some
+               log options. Check out "8.3.5. Log profiles" for more info.
+
     <facility> must be one of the 24 standard syslog facilities :
 
                    kern   user   mail   daemon auth   syslog lpr    news
@@ -8182,8 +8335,8 @@ no log
                                                 # level and send in tcp
     log "${LOCAL_SYSLOG}:514" local0 notice   # send to local server
 
-log-format <string>
-  Specifies the log format string to use for traffic logs
+log-format <fmt>
+  Specifies the custom log format string to use for traffic logs
 
   May be used in the following contexts: tcp, http
 
@@ -8193,16 +8346,17 @@ log-format <string>
   This directive specifies the log format string that will be used for all logs
   resulting from traffic passing through the frontend using this line. If the
   directive is used in a defaults section, all subsequent frontends will use
-  the same log format. Please see section 8.2.4 which covers the log format
-  string in depth.
+  the same log format. Please see section 8.2.6 which covers the custom log
+  format string in depth.
+
   A specific log-format used only in case of connection error can also be
   defined, see the "error-log-format" option.
 
   "log-format" directive overrides previous "option tcplog", "log-format",
   "option httplog" and "option httpslog" directives.
 
-log-format-sd <string>
-  Specifies the RFC5424 structured-data log format string
+log-format-sd <fmt>
+  Specifies the Custom log format string used to produce RFC5424 structured-data
 
   May be used in the following contexts: tcp, http
 
@@ -8212,7 +8366,7 @@ log-format-sd <string>
   This directive specifies the RFC5424 structured-data log format string that
   will be used for all logs resulting from traffic passing through the frontend
   using this line. If the directive is used in a defaults section, all
-  subsequent frontends will use the same log format. Please see section 8.2.4
+  subsequent frontends will use the same log format. Please see section 8.2.6
   which covers the log format string in depth.
 
   See https://tools.ietf.org/html/rfc5424#section-6.3 for more information
@@ -9720,7 +9874,7 @@ no option logasap
 
   Arguments : none
 
-  By default, logs are emitted when all the log format variables and sample
+  By default, logs are emitted when all the log format aliases and sample
   fetches used in the definition of the log-format string return a value, or
   when the stream is terminated. This allows the built in log-format strings
   to account for the transfer time, or the number of bytes in log messages.
@@ -10766,8 +10920,8 @@ redirect scheme   <sch> [code <code>] <option> [{if | unless} <condition>]
   Arguments :
     <loc>     With "redirect location", the exact value in <loc> is placed into
               the HTTP "Location" header. When used in an "http-request" rule,
-              <loc> value follows the log-format rules and can include some
-              dynamic values (see Custom Log Format in section 8.2.4).
+              <loc> value follows the Custom log format rules and can include
+              some dynamic values (see Custom log format in section 8.2.6).
 
     <pfx>     With "redirect prefix", the "Location" header is built from the
               concatenation of <pfx> and the complete URI path, including the
@@ -10775,9 +10929,9 @@ redirect scheme   <sch> [code <code>] <option> [{if | unless} <condition>]
               below). As a special case, if <pfx> equals exactly "/", then
               nothing is inserted before the original URI. It allows one to
               redirect to the same URL (for instance, to insert a cookie). When
-              used in an "http-request" rule, <pfx> value follows the log-format
-              rules and can include some dynamic values (see Custom Log Format
-              in section 8.2.4).
+              used in an "http-request" rule, <pfx> value follows the Custom
+              Log Format rules and can include some dynamic values (see Custom
+              Log Format in section 8.2.6).
 
     <sch>     With "redirect scheme", then the "Location" header is built by
               concatenating <sch> with "://" then the first occurrence of the
@@ -10788,8 +10942,8 @@ redirect scheme   <sch> [code <code>] <option> [{if | unless} <condition>]
               returned, which most recent browsers interpret as redirecting to
               the same host. This directive is mostly used to redirect HTTP to
               HTTPS. When used in an "http-request" rule, <sch> value follows
-              the log-format rules and can include some dynamic values (see
-              Custom Log Format in section 8.2.4).
+              the Custom log format rules and can include some dynamic values
+              (see Custom log format in section 8.2.6).
 
     <code>    The code is optional. It indicates which type of HTTP redirection
               is desired. Only codes 301, 302, 303, 307 and 308 are supported,
@@ -12666,12 +12820,13 @@ tcp-check expect [min-recv <int>] [comment <msg>]
     on-success <fmt>   is optional and can be used to customize the
                        informational message reported in logs if the expect
                        rule is successfully evaluated and if it is the last rule
-                       in the tcp-check ruleset. <fmt> is a log-format string.
+                       in the tcp-check ruleset. <fmt> is a Custom log format
+                       (see section 8.2.6).
 
     on-error <fmt>     is optional and can be used to customize the
                        informational message reported in logs if an error
                        occurred during the expect rule evaluation. <fmt> is a
-                       log-format string.
+                       Custom log format (see section 8.2.6).
 
     status-code <expr> is optional and can be used to set the check status code
                        reported in logs, on success or on error. <expr> is a
@@ -12704,12 +12859,13 @@ tcp-check expect [min-recv <int>] [comment <msg>]
                       will be considered invalid if the body matches the
                       expression.
 
-    string-lf <fmt> : test a log-format string match in the response's buffer.
+    string-lf <fmt> : test a Custom log format match in the response's buffer.
                       A health check response will be considered valid if the
                       response's buffer contains the  string resulting of the
-                      evaluation of <fmt>, which follows the log-format rules.
-                      If prefixed with "!", then the response will be
-                      considered invalid if the buffer contains the string.
+                      evaluation of <fmt>, which follows the Custom log format
+                      rules described in section 8.2.6. If prefixed with "!",
+                      then the response will be considered invalid if the
+                      buffer contains the string.
 
     binary <hexstring> : test the exact string in its hexadecimal form matches
                          in the response buffer. A health check response will
@@ -12726,16 +12882,16 @@ tcp-check expect [min-recv <int>] [comment <msg>]
                       pattern should work on at-most half the response buffer
                       size.
 
-    binary-lf <hexfmt> : test a log-format string in its hexadecimal form
-                         match in the response's buffer. A health check response
-                         will be considered valid if the response's buffer
-                         contains the hexadecimal string resulting of the
-                         evaluation of <fmt>, which follows the log-format
-                         rules. If prefixed with "!", then the response will be
-                         considered invalid if the buffer contains the
-                         hexadecimal string. The hexadecimal string is converted
-                         in a binary string before matching the response's
-                         buffer.
+    binary-lf <hexfmt> : test a Custom log format in its hexadecimal form match
+                         in the response's buffer. A health check response will
+                         be considered valid if the response's buffer contains
+                         the hexadecimal string resulting of the evaluation of
+                         <fmt>, which follows the Custom log format rules (see
+                         section 8.2.6). If prefixed with "!", then the
+                         response will be considered invalid if the buffer
+                         contains the hexadecimal string. The hexadecimal
+                         string is converted in a binary string before matching
+                         the response's buffer.
 
   It is important to note that the responses will be limited to a certain size
   defined by the global "tune.bufsize" option, which defaults to 16384 bytes.
@@ -12774,7 +12930,7 @@ tcp-check expect [min-recv <int>] [comment <msg>]
 
 tcp-check send <data> [comment <msg>]
 tcp-check send-lf <fmt> [comment <msg>]
-  Specify a string or a log-format string to be sent as a question during a
+  Specify a string or a Custom log format to be sent as a question during a
   generic health check
 
   May be used in the following contexts: tcp, http, log
@@ -12788,8 +12944,8 @@ tcp-check send-lf <fmt> [comment <msg>]
     <data>         is the string that will be sent during a generic health
                    check session.
 
-    <fmt>          is the log-format string that will be sent, once evaluated,
-                   during a generic health check session.
+    <fmt>          is the Custom log format that will be sent, once evaluated,
+                   during a generic health check session (see section 8.2.6).
 
   Examples :
          # look for the redis master server
@@ -12803,7 +12959,7 @@ tcp-check send-lf <fmt> [comment <msg>]
 
 tcp-check send-binary <hexstring> [comment <msg>]
 tcp-check send-binary-lf <hexfmt> [comment <msg>]
-  Specify an hex digits string or an hex digits log-format string to be sent as
+  Specify an hex digits string or an hex digits Custom log format to be sent as
   a binary question during a raw tcp health check
 
   May be used in the following contexts: tcp, http, log
@@ -12817,9 +12973,9 @@ tcp-check send-binary-lf <hexfmt> [comment <msg>]
     <hexstring>    is the hexadecimal string that will be send, once converted
                    to binary, during a generic health check session.
 
-    <hexfmt>       is the hexadecimal log-format string that will be send, once
+    <hexfmt>       is the hexadecimal Custom log format that will be send, once
                    evaluated and converted to binary, during a generic health
-                   check session.
+                   check session (see section 8.2.6).
 
   Examples :
          # redis check in binary
@@ -12858,8 +13014,8 @@ tcp-check set-var-fmt(<var-name>[,<cond>...]) <fmt>
 
     <expr>      Is a sample-fetch expression potentially followed by converters.
 
-    <fmt>       This is the value expressed using log-format rules (see Custom
-                Log Format in section 8.2.4).
+    <fmt>       This is the value expressed using Custom log format rules (see
+                Custom log format in section 8.2.6).
 
   Examples :
     tcp-check set-var(check.port) int(1234)
@@ -13798,7 +13954,7 @@ transparent (deprecated)
 
   See also: "option transparent"
 
-unique-id-format <string>
+unique-id-format <fmt>
   Generate a unique ID for each request.
 
   May be used in the following contexts: tcp, http
@@ -13807,12 +13963,12 @@ unique-id-format <string>
                                   yes  |    yes   |   yes  |   no
 
   Arguments :
-    <string>   is a log-format string.
+    <fmt>   is a Custom log format string (see section 8.2.6).
 
   This keyword creates a ID for each request using the custom log format. A
   unique ID is useful to trace a request passing through many components of
   a complex infrastructure. The newly created ID may also be logged using the
-  %ID tag the log-format string.
+  %ID alias in the Custom log format string.
 
   The format should be composed from elements that are guaranteed to be
   unique when combined together. For instance, if multiple HAProxy instances
@@ -13871,7 +14027,8 @@ use_backend <backend> [{if | unless} <condition>]
 
   Arguments :
     <backend>   is the name of a valid backend or "listen" section, or a
-                "log-format" string resolving to a backend name.
+                Custom log format resolving to a backend name (see Custom
+                Log Format in section 8.2.6).
 
     <condition> is a condition composed of ACLs, as described in section 7. If
                 it is omitted, the rule is unconditionally applied.
@@ -13903,7 +14060,7 @@ use_backend <backend> [{if | unless} <condition>]
 
   When <backend> is a simple name, it is resolved at configuration time, and an
   error is reported if the specified backend does not exist. If <backend> is
-  a log-format string instead, no check may be done at configuration time, so
+  a Custom log format instead, no check may be done at configuration time, so
   the backend name is resolved dynamically at run time. If the resulting
   backend name does not correspond to any valid backend, no other rule is
   evaluated, and the default_backend directive is applied instead. Note that
@@ -13942,7 +14099,8 @@ use-server <server> unless <condition>
 
   Arguments :
     <server>    is the name of a valid server in the same backend section
-                or a "log-format" string resolving to a server name.
+                or a Custom log format string resolving to a server name
+                (see section 8.2.6).
 
     <condition> is a condition composed of ACLs, as described in section 7.
 
@@ -13990,10 +14148,10 @@ use-server <server> unless <condition>
 
   When <server> is a simple name, it is checked against existing servers in the
   configuration and an error is reported if the specified server does not exist.
-  If it is a log-format, no check is performed when parsing the configuration,
-  and if we can't resolve a valid server name at runtime but the use-server rule
-  was conditioned by an ACL returning true, no other use-server rule is applied
-  and we fall back to load balancing.
+  If it is a Custom log format, no check is performed when parsing the
+  configuration, and if we can't resolve a valid server name at runtime but the
+  use-server rule was conditioned by an ACL returning true, no other use-server
+  rule is applied and we fall back to load balancing.
 
   See also: "use_backend", section 5 about server and section 7 about ACLs.
 
@@ -14063,7 +14221,7 @@ sc-inc-gpc0                    X     X     X     X            X   X   X
 sc-inc-gpc1                    X     X     X     X            X   X   X
 sc-set-gpt                     X     X     X     X            X   X   X
 sc-set-gpt0                    X     X     X     X            X   X   X
-send-spoe-group (deprecated)   -     -     X     X            X   X   -
+send-spoe-group                -     -     X     X            X   X   -
 set-bandwidth-limit            -     -     X     X            X   X   -
 set-bc-mark                    -     -     X     -            X   -   -
 set-bc-tos                     -     -     X     -            X   -   -
@@ -14130,10 +14288,10 @@ add-acl(<file-name>) <key fmt>
   This is used to add a new entry into an ACL. The ACL must be loaded from a
   file (even a dummy empty file). The file name of the ACL to be updated is
   passed between parentheses. It takes one argument: <key fmt>, which follows
-  log-format rules, to collect content of the new entry. It performs a lookup
-  in the ACL before insertion, to avoid duplicated (or more) values.
-  It is the equivalent of the "add acl" command from the stats socket, but can
-  be triggered by an HTTP request.
+  Custom log format rules described in section 8.2.6, to collect content of the
+  new entry. It performs a lookup in the ACL before insertion, to avoid
+  duplicated (or more) values. It is the equivalent of the "add acl" command
+  from the stats socket, but can be triggered by an HTTP request.
 
 
 add-header <name> <fmt>
@@ -14141,13 +14299,13 @@ add-header <name> <fmt>
                     -  |   -  |   -  |   -  |          X |  X |  X
 
   This appends an HTTP header field whose name is specified in <name> and
-  whose value is defined by <fmt> which follows the log-format rules (see
-  Custom Log Format in section 8.2.4). This is particularly useful to pass
+  whose value is defined by <fmt> which follows the Custom log format rules
+  (see Custom log format in section 8.2.6). This is particularly useful to pass
   connection-specific information to the server (e.g. the client's SSL
-  certificate), or to combine several headers into one. This rule is not
-  final, so it is possible to add other similar rules. Note that header
-  addition is performed immediately, so one rule might reuse the resulting
-  header from a previous rule.
+  certificate), or to combine several headers into one. This rule is not final,
+  so it is possible to add other similar rules. Note that header addition is
+  performed immediately, so one rule might reuse the resulting header from a
+  previous rule.
 
 
 allow
@@ -14171,19 +14329,18 @@ attach-srv <srv> [name <expr>] [ EXPERIMENTAL ]
   pool of server <srv>. This may only be used with servers having an 'rhttp@'
   address.
 
-  An extra parameter <expr> can be specified. Its value is interpreted as a
-  sample expression to name the connection inside the server idle pool. When
-  routing an outgoing request through this server, this name will be matched
-  against the 'sni' parameter of the server line. Otherwise, the connection
-  will have no name and will only match requests without SNI.
-
-  This rule is only valid for frontend in HTTP mode. Also all listeners must
-  not require a protocol different from HTTP/2.
+  The connection is inserted into the server idle pool with a name defined by
+  the result of the <expr> evaluation. This is the name that will be matched
+  against by requests subject to "pool-conn-name" or "sni" parameter. See
+  "http-reuse" for more details.
 
   Reverse HTTP is currently still in active development. Configuration
   mechanism may change in the future. For this reason it is internally marked
   as experimental, meaning that "expose-experimental-directives" must appear on
   a line before this directive.
+
+  Note that a very similar but independent protocol is under development. See
+  https://www.ietf.org/archive/id/draft-bt-httpbis-reverse-http-00.html.
 
 auth [realm <realm>]
   Usable in:  TCP RqCon| RqSes| RqCnt| RsCnt|    HTTP Req| Res| Aft
@@ -14277,9 +14434,9 @@ del-acl(<file-name>) <key fmt>
   This is used to delete an entry from an ACL. The ACL must be loaded from a
   file (even a dummy empty file). The file name of the ACL to be updated is
   passed between parentheses. It takes one argument: <key fmt>, which follows
-  log-format rules, to collect content of the entry to delete.
-  It is the equivalent of the "del acl" command from the stats socket, but can
-  be triggered by an HTTP request or response.
+  Custom log format rules of section 8.2.6, to collect content of the entry to
+  delete.  It is the equivalent of the "del acl" command from the stats socket,
+  but can be triggered by an HTTP request or response.
 
 
 del-header <name> [ -m <meth> ]
@@ -14300,10 +14457,10 @@ del-map(<map-name>) <key fmt>
   This is used to delete an entry from a MAP. <map-name> must follow the format
   described in 2.7. about name format for maps and ACLs. The name of the MAP to
   be updated is passed between parentheses. It takes one argument: <key fmt>,
-  which follows log-format rules, to collect content of the entry to delete.
-  It takes one argument: "file name" It is the equivalent of the "del map"
-  command from the stats socket, but can be triggered by an HTTP request or
-  response.
+  which follows Custom log format rules of section 8.2.6, to collect content of
+  the entry to delete.  It takes one argument: "file name" It is the equivalent
+  of the "del map" command from the stats socket, but can be triggered by an
+  HTTP request or response.
 
 
 deny [ { status | deny_status } <code> ] [ content-type <type> ]
@@ -14398,10 +14555,10 @@ early-hint <name> <fmt>
 
   This is used to build an HTTP 103 Early Hints response prior to any other one.
   This appends an HTTP header field to this response whose name is specified in
-  <name> and whose value is defined by <fmt> which follows the log-format rules
-  (see Custom Log Format in section 8.2.4). This is particularly useful to pass
-  to the client some Link headers to preload resources required to render the
-  HTML documents.
+  <name> and whose value is defined by <fmt> which follows the Custom Log
+  Format rules (see Custom log format in section 8.2.6). This is particularly
+  useful to pass to the client some Link headers to preload resources required
+  to render the HTML documents.
 
   See RFC 8297 for more information.
 
@@ -14588,7 +14745,7 @@ redirect <rule>
   This performs an HTTP redirection based on a redirect rule. This is exactly
   the same as the "redirect" statement except that it inserts a redirect rule
   which is processed in the middle of other "http-request" or "http-response"
-  rules and that these rules use the "log-format" strings. For responses, only
+  rules and that these rules use the Custom log format. For responses, only
   the "location" type of redirect is permitted. In addition, when a redirect is
   performed during a response, the transfer from the server to HAProxy is
   interrupted so that no payload can be forwarded to the client. This may cause
@@ -14814,19 +14971,20 @@ return [ status <code> ] [ content-type <type> ]
     used as the response payload. If the file is not empty, its content-type
     must be set as argument to "content-type". Otherwise, any "content-type"
     argument is ignored. With a "lf-file" argument, the file's content is
-    evaluated as a log-format string. With a "file" argument, it is considered
-    as a raw content.
+    evaluated as a Custom log format (see section 8.2.6). With a "file"
+    argument, it is considered as a raw content.
 
   * If a "string" or "lf-string" argument is specified, the defined string is
     used as the response payload. The content-type must always be set as
     argument to "content-type". With a "lf-string" argument, the string is
-    evaluated as a log-format string. With a "string" argument, it is
-    considered as a raw string.
+    evaluated as a Custom log format (see section 8.2.6). With a "string"
+    argument, it is considered as a raw string.
 
   When the response is not based on an errorfile, it is possible to append HTTP
   header fields to the response using "hdr" arguments. Otherwise, all "hdr"
   arguments are ignored. For each one, the header name is specified in <name>
-  and its value is defined by <fmt> which follows the log-format rules.
+  and its value is defined by <fmt> which follows the Custom log format rules
+  described in section 8.2.6.
 
   Note that the generated response must be smaller than a buffer. And to avoid
   any warning, when an errorfile or a raw file is loaded, the buffer space
@@ -14924,7 +15082,7 @@ sc-set-gpt0(<sc-id>) { <int> | <expr> }
   See also the "sc-set-gpt" action.
 
 
-send-spoe-group <engine-name> <group-name> (deprecated)
+send-spoe-group <engine-name> <group-name>
   Usable in:  TCP RqCon| RqSes| RqCnt| RsCnt|    HTTP Req| Res| Aft
                     -  |   -  |   X  |   X  |          X |  X |  -
 
@@ -15130,11 +15288,12 @@ set-map(<map-name>) <key fmt> <value fmt>
   This is used to add a new entry into a map. <map-name> must follow the format
   described in 2.7. about name format for maps and ACLs. The name of the MAP to
   be updated is passed between parentheses. It takes 2 arguments: <key fmt>,
-  which follows log-format rules, used to collect map key, and <value fmt>,
-  which follows log-format rules, used to collect content for the new entry.
-  It performs a lookup in the map before insertion, to avoid duplicated (or
-  more) values. It is the equivalent of the "set map" command from the
-  stats socket, but can be triggered by an HTTP request.
+  which follows Custom log format rules described in section 8.2.6, used to
+  collect map key, and <value fmt>, which follows Custom log format rules, used
+  to collect content for the new entry. It performs a lookup in the map before
+  insertion, to avoid duplicated (or more) values. It is the equivalent of the
+  "set map" command from the stats socket, but can be triggered by an HTTP
+  request.
 
 
 set-mark <mark> (deprecated)
@@ -15374,8 +15533,8 @@ set-var-fmt(<var-name>[,<cond>...]) <fmt>
     <expr>      Is a standard HAProxy expression formed by a sample-fetch
                 followed by some converters.
 
-    <fmt>       This is the value expressed using log-format rules (see Custom
-                Log Format in section 8.2.4).
+    <fmt>       This is the value expressed using Custom log format rules (see
+                Custom log format in section 8.2.6).
 
   All scopes are usable for HTTP rules, but scopes "proc" and "sess" are the
   only usable ones in rule sets which do not have access to contents such as
@@ -15693,19 +15852,6 @@ backlog <backlog>
   Sets the socket's backlog to this value. If unspecified or 0, the frontend's
   backlog is used instead, which generally defaults to the maxconn value.
 
-curves <curves>
-  This setting is only available when support for OpenSSL was built in. It sets
-  the string describing the list of elliptic curves algorithms ("curve suite")
-  that are negotiated during the SSL/TLS handshake with ECDHE. The format of the
-  string is a colon-delimited list of curve name.
-  Example: "X25519:P-256" (without quote)
-  When "curves" is set, "ecdhe" parameter is ignored.
-
-ecdhe <named curve>
-  This setting is only available when support for OpenSSL was built in. It sets
-  the named curve (RFC 4492) used to generate ECDH ephemeral keys. By default,
-  used named curve is prime256v1.
-
 ca-file <cafile>
   This setting is only available when support for OpenSSL was built in. It
   designates a PEM file from which to load CA certificates used to verify
@@ -15894,11 +16040,38 @@ crt-list <file>
 
         <crtfile> [\[<sslbindconf> ...\]] [[!]<snifilter> ...]
 
-  sslbindconf supports "allow-0rtt", "alpn", "ca-file", "ca-verify-file",
-  "ciphers", "ciphersuites", "crl-file", "curves", "ecdhe", "no-ca-names",
-  "npn", "verify" configuration. With BoringSSL and Openssl >= 1.1.1
-  "ssl-min-ver" and "ssl-max-ver" are also supported. It overrides the
-  configuration set in bind line for the certificate.
+  sslbindconf supports the following keywords from the bind line
+  (see Section 5.1. Bind options):
+
+  - allow-0rtt
+  - alpn
+  - ca-file
+  - ca-verify-file
+  - ciphers
+  - ciphersuites
+  - client-sigalgs
+  - crl-file
+  - curves
+  - ecdhe
+  - no-alpn
+  - no-ca-names
+  - npn
+  - sigalgs
+  - ssl-min-ver
+  - ssl-max-ver
+  - verify
+
+  sslbindconf also supports the following keywords from the crt-store load
+  keyword (see Section 3.12.1. Load options):
+
+  - crt
+  - key
+  - ocsp
+  - issuer
+  - sctl
+  - ocsp-update
+
+  It overrides the configuration set in bind line for the certificate.
 
   Wildcards are supported in the SNI filter. Negative filter are also supported,
   useful in combination with a wildcard filter to exclude a particular SNI, or
@@ -15942,6 +16115,7 @@ crt-list <file>
         certS.pem [curves X25519:P-256 ciphers ECDHE-ECDSA-AES256-GCM-SHA384] secure.domain.tld
         default.pem.rsa *
         default.pem.ecdsa *
+        foo.crt [key bar.pem ocsp foo.ocsp ocsp-update on] foo.bar.com
 
 default-crt <cert>
   This option does the same as the "crt" option, with the difference that this
@@ -15960,6 +16134,14 @@ default-crt <cert>
 
   See also the "crt" keyword.
 
+curves <curves>
+  This setting is only available when support for OpenSSL was built in. It sets
+  the string describing the list of elliptic curves algorithms ("curve suite")
+  that are negotiated during the SSL/TLS handshake with ECDHE. The format of the
+  string is a colon-delimited list of curve name.
+  Example: "X25519:P-256" (without quote)
+  When "curves" is set, "ecdhe" parameter is ignored.
+
 defer-accept
   Is an optional keyword which is supported only on certain Linux kernels. It
   states that a connection will only be accepted once some data arrive on it,
@@ -15972,6 +16154,11 @@ defer-accept
   the client talks. This can cause issues with front firewalls which would see
   an established connection while the proxy will only see it in SYN_RECV. This
   option is only supported on TCPv4/TCPv6 sockets and ignored by other ones.
+
+ecdhe <named curve>
+  This setting is only available when support for OpenSSL was built in. It sets
+  the named curve (RFC 4492) used to generate ECDH ephemeral keys. By default,
+  used named curve is prime256v1.
 
 expose-fd listeners
   This option is only usable with the stats socket. It gives your stats socket
@@ -16076,18 +16263,6 @@ level <level>
     counters).
   - "admin" should be used with care, as everything is permitted (e.g. clear
     all counters).
-
-severity-output <format>
-  This setting is used with the stats sockets only to configure severity
-  level output prepended to informational feedback messages. Severity
-  level of messages can range between 0 and 7, conforming to syslog
-  rfc5424. Valid and successful socket commands requesting data
-  (i.e. "show map", "get acl foo" etc.) will never have a severity level
-  prepended. It is ignored by other sockets. <format> can be one of :
-  - "none" (default) no severity level is prepended to feedback messages.
-  - "number" severity level is prepended as a number.
-  - "string" severity level is prepended as a string following the
-    rfc5424 convention.
 
 maxconn <maxconn>
   Limits the sockets to this number of concurrent connections. Extraneous
@@ -16227,91 +16402,6 @@ npn <protocols>
   at the time of writing this. It is possible to enable both NPN and ALPN
   though it probably doesn't make any sense out of testing.
 
-ocsp-update [ off | on ] (crt-list only)
-  Enable automatic OCSP response update when set to 'on', disable it otherwise.
-  Its value defaults to 'off'.
-  Please note that for now, this option can only be used in a crt-list line, it
-  cannot be used directly on a bind line. It lies in this "Bind options"
-  section because it is still a frontend option. For now, the only way to
-  enable OCSP auto update on a bind line certificate is via the global option
-  "tune.ocsp-update.mode".
-  If a given certificate is used in multiple crt-lists with different values of
-  the 'ocsp-update' set, an error will be raised. Likewise, if a certificate
-  inherits from the global option on a bind line and has an incompatible
-  explicit 'ocsp-update' option set in a crt-list, the same error will be
-  raised.
-  Here is an example configuration enabling it:
-
-  haproxy.cfg:
-      frontend fe
-          bind :443 ssl crt-list haproxy.list
-
-  haproxy.list:
-      server_cert.pem [ocsp-update on] foo.bar
-
-  When the option is set to 'on', we will try to get an ocsp response whenever
-  an ocsp uri is found in the frontend's certificate. The only limitation of
-  this mode is that the certificate's issuer will have to be known in order for
-  the OCSP certid to be built.
-  Each OCSP response will be updated at least once an hour, and even more
-  frequently if a given OCSP response has an expire date earlier than this one
-  hour limit. A minimum update interval of 5 minutes will still exist in order
-  to avoid updating too often responses that have a really short expire time or
-  even no 'Next Update' at all. Because of this hard limit, please note that
-  when auto update is set to 'on', any OCSP response loaded during init will
-  not be updated until at least 5 minutes, even if its expire time ends before
-  now+5m. This should not be too much of a hassle since an OCSP response must
-  be valid when it gets loaded during init (its expire time must be in the
-  future) so it is unlikely that this response expires in such a short time
-  after init.
-  On the other hand, if a certificate has an OCSP uri specified and no OCSP
-  response, setting this option to 'on' for the given certificate will ensure
-  that the OCSP response gets fetched automatically right after init.
-  The default minimum and maximum delays (5 minutes and 1 hour respectively)
-  can be configured by the "tune.ssl.ocsp-update.maxdelay" and
-  "tune.ssl.ocsp-update.mindelay" global options.
-
-  Whenever an OCSP response is updated by the auto update task or following a
-  call to the "update ssl ocsp-response" CLI command, a dedicated log line is
-  emitted. It follows a dedicated format that contains the following header
-  "<OCSP-UPDATE>" and is followed by specific OCSP-related information:
-    - the path of the corresponding frontend certificate
-    - a numerical update status
-    - a textual update status
-    - the number of update failures for the given response
-    - the number of update successes for the givan response
-  See "show ssl ocsp-updates" CLI command for a full list of error codes and
-  error messages. This line is emitted regardless of the success or failure of
-  the concerned OCSP response update.
-  The OCSP request/response is sent and received through an http_client
-  instance that has the dontlog-normal option set and that uses the regular
-  HTTP log format in case of error (unreachable OCSP responder for instance).
-  If such an error occurs, another log line that contains HTTP-related
-  information will then be emitted alongside the "regular" OCSP one (which will
-  likely have "HTTP error" as text status). But if a purely HTTP error happens
-  (unreachable OCSP responder for instance), an extra log line that follows the
-  regular HTTP log-format will be emitted.
-  Here are two examples of such log lines, with a successful OCSP update log
-  line first and then an example of an HTTP error with the two different lines
-  (lines were spit and the URL was shortened for readability):
-    <133>Mar  6 11:16:53 haproxy[14872]: <OCSP-UPDATE> /path_to_cert/foo.pem 1 \
-            "Update successful" 0 1
-
-    <133>Mar  6 11:18:55 haproxy[14872]: <OCSP-UPDATE> /path_to_cert/bar.pem 2 \
-            "HTTP error" 1 0
-    <133>Mar  6 11:18:55 haproxy[14872]: -:- [06/Mar/2023:11:18:52.200] \
-            <OCSP-UPDATE> -/- 2/0/-1/-1/3009 503 217 - - SC-- 0/0/0/0/3 0/0 {} \
-            "GET http://127.0.0.1:12345/MEMwQT HTTP/1.1"
-
-  Troubleshooting:
-  A common error that can happen with let's encrypt certificates is if the DNS
-  resolution provides an IPv6 address and your system does not have a valid
-  outgoing IPv6 route. In such a case, you can either create the appropriate
-  route or set the "httpclient.resolvers.prefer ipv4" option in the global
-  section.
-  In case of "OCSP response check failure" error, you might want to check that
-  the issuer certificate that you provided is valid.
-
 prefer-client-ciphers
   Use the client's preference when selecting the cipher suite, by default
   the server's preference is enforced. This option is also available on
@@ -16379,6 +16469,18 @@ quic-socket [ connection | listener ]
   This QUIC specific setting allows to define the socket allocation mode for
   the specific listeners. See "tune.quic.socket-owner" for a full description
   of its usage.
+
+severity-output <format>
+  This setting is used with the stats sockets only to configure severity
+  level output prepended to informational feedback messages. Severity
+  level of messages can range between 0 and 7, conforming to syslog
+  rfc5424. Valid and successful socket commands requesting data
+  (i.e. "show map", "get acl foo" etc.) will never have a severity level
+  prepended. It is ignored by other sockets. <format> can be one of :
+  - "none" (default) no severity level is prepended to feedback messages.
+  - "number" severity level is prepended as a number.
+  - "string" severity level is prepended as a string following the
+    rfc5424 convention.
 
 shards <number> | by-thread | by-group
   In multi-threaded mode, on operating systems supporting multiple listeners on
@@ -16562,20 +16664,6 @@ transparent
   kernel version. Some distribution kernels include backports of the feature,
   so check for support with your vendor.
 
-v4v6
-  Is an optional keyword which is supported only on most recent systems
-  including Linux kernels >= 2.4.21. It is used to bind a socket to both IPv4
-  and IPv6 when it uses the default address. Doing so is sometimes necessary
-  on systems which bind to IPv6 only by default. It has no effect on non-IPv6
-  sockets, and is overridden by the "v6only" option.
-
-v6only
-  Is an optional keyword which is supported only on most recent systems
-  including Linux kernels >= 2.4.21. It is used to bind a socket to IPv6 only
-  when it uses the default address. Doing so is sometimes preferred to doing it
-  system-wide as it is per-listener. It has no effect on non-IPv6 sockets and
-  has precedence over the "v4v6" option.
-
 uid <uid>
   Sets the owner of the UNIX sockets to the designated system uid. It can also
   be set by default in the global section's "unix-bind" statement. Note that
@@ -16589,6 +16677,20 @@ user <user>
   some platforms simply ignore this. This setting is equivalent to the "uid"
   setting except that the user name is used instead of its uid. This setting is
   ignored by non UNIX sockets.
+
+v4v6
+  Is an optional keyword which is supported only on most recent systems
+  including Linux kernels >= 2.4.21. It is used to bind a socket to both IPv4
+  and IPv6 when it uses the default address. Doing so is sometimes necessary
+  on systems which bind to IPv6 only by default. It has no effect on non-IPv6
+  sockets, and is overridden by the "v6only" option.
+
+v6only
+  Is an optional keyword which is supported only on most recent systems
+  including Linux kernels >= 2.4.21. It is used to bind a socket to IPv6 only
+  when it uses the default address. Doing so is sometimes preferred to doing it
+  system-wide as it is per-listener. It has no effect on non-IPv6 sockets and
+  has precedence over the "v4v6" option.
 
 verify [none|optional|required]
   This setting is only available when support for OpenSSL was built in. If set
@@ -17059,9 +17161,35 @@ force-tlsv13
   "ssl-default-server-options". See also "ssl-min-ver" and ssl-max-ver".
 
 guid <string>
+  May be used in the following contexts: tcp, http, log
+
   Specify a case-sensitive global unique ID for this server. This must be
   unique across all haproxy configuration on every object types. See "guid"
   proxy keyword description for more information on its format.
+
+hash-key <key>
+  May be used in the following contexts: tcp, http, log
+
+  Specify how "hash-type consistent" node keys are computed
+
+  Arguments :
+    <key>   <key> may be one of the following :
+
+      id         The node keys will be derived from the server's numeric
+                 identifier as set from "id" or which defaults to its position
+                 in the server list.
+
+      addr       The node keys will be derived from the server's address, when
+                 available, or else fall back on "id".
+
+      addr-port  The node keys will be derived from the server's address and
+                 port, when available, or else fall back on "id".
+
+  The "addr" and "addr-port" options may be useful in scenarios where multiple
+  HAProxy processes are balancing traffic to the same set of servers. If the
+  server order of each process is different (because, for example, DNS records
+  were resolved in different orders) then this will allow each independent
+  HAProxy processes to agree on routing decisions.
 
 id <value>
   May be used in the following contexts: tcp, http, log
@@ -17478,6 +17606,22 @@ on-marked-up <action>
 
   Actions are disabled by default
 
+pool-conn-name <expr>
+  May be used in the following contexts: http
+
+  When a backend connection is established, this expression is evaluated to
+  generate the connection name. This name is one of the key properties of the
+  connection in the idle server pool. See the "http-reuse" keyword. When a
+  request looks up an existing idle connection, this expression is evaluated to
+  match an identical connection.
+
+  In context where SSL SNI is used for backend connection, the connection name
+  is automatically assigned to the result of the "sni" expression. This suits
+  the most common usage. For more advanced setup, "pool-conn-name" may be used
+  to override this.
+
+  See also: "http-reuse", "sni"
+
 pool-low-conn <max>
   May be used in the following contexts: http
 
@@ -17821,6 +17965,9 @@ sni <expression>
   name will also be matched against the server certificate's names. See the
   "verify" directive for more details. If you want to set a SNI for health
   checks, see the "check-sni" directive for more details.
+
+  By default, the SNI is assigned to the connection name for "http-reuse",
+  unless overriden by the "pool-conn-name" server keyword.
 
 source <addr>[:<pl>[-<ph>]] [usesrc { <addr2>[:<port2>] | client | clientip } ]
 source <addr>[:<port>] [usesrc { <addr2>[:<port2>] | hdr_ip(<hdr>[,<occ>]) } ]
@@ -18979,6 +19126,7 @@ crc32([avalanche])                                 binary       integer
 crc32c([avalanche])                                binary       integer
 cut_crlf                                           string       string
 da-csv-conv(prop[,prop*])                          string       string
+date                                               string       integer
 debug([prefix][,destination])                       any          same
 -- keyword -------------------------------------+- input type + output type -
 digest(algorithm)                                  binary       binary
@@ -19163,7 +19311,7 @@ aes_gcm_dec(<bits>,<nonce>,<key>,<aead_tag>)
       aes_gcm_dec(128,txn.nonce,Zm9vb2Zvb29mb29wZm9vbw==,txn.aead_tag)]
 
 aes_gcm_enc(<bits>,<nonce>,<key>,<aead_tag>)
-  Decrypts the raw byte input using the AES128-GCM, AES192-GCM or
+  Encrypts the raw byte input using the AES128-GCM, AES192-GCM or
   AES256-GCM algorithm, depending on the <bits> parameter. <nonce> and <key>
   parameters must be base64 encoded. Last parameter, <aead_tag>, must be a
   variable. The AEAD tag will be stored base64 encoded into that variable.
@@ -19338,6 +19486,13 @@ da-csv-conv(<prop>[,<prop>*])
       bind *:8881
       default_backend servers
       http-request set-header X-DeviceAtlas-Data %[req.fhdr(User-Agent),da-csv(primaryHardwareType,osName,osVersion,browserName,browserVersion,browserRenderingEngine)]
+
+date
+  This converter is used to convert a date from an HTTP header. It can be an IMF
+  date, an ASCTIME date or a RFC850 date. It will output an UNIX timestamp.
+
+  Example:
+     http-request return lf-string "%[str('Sun, 06 Nov 1994 08:49:37 GMT'),date]\n" content-type text/plain
 
 debug([<prefix][,<destination>])
   This converter is used as debug tool. It takes a capture of the input sample
@@ -21315,8 +21470,11 @@ txn.sess_term_state : string
       # Return a 429-Too-Many-Requests if stream timed out in queue
       http-after-response set-status 429 if { txn.sess_term_state  "sQ" }
 
+uptime : integer
+  Returns the uptime of the current HAProxy worker in seconds.
+
 uuid([<version>]) : string
-  Returns a UUID following the RFC4122 standard. If the version is not
+  Returns a UUID following the RFC 9562 standard. If the version is not
   specified, a UUID version 4 (fully random) is returned.
 
   Versions 4 and 7 are supported.
@@ -21366,9 +21524,11 @@ bc_err                                             integer
 bc_err_str                                         string
 bc_glitches                                        integer
 bc_http_major                                      integer
+bc_nb_streams                                      integer
 bc_src                                             ip
 bc_src_port                                        integer
 bc_srv_queue                                       integer
+bc_settings_streams_limit                          integer
 be_id                                              integer
 be_name                                            string
 bc_rtt(<unit>)                                     integer
@@ -21395,6 +21555,7 @@ fc_fackets                                         integer
 fc_glitches                                        integer
 fc_http_major                                      integer
 fc_lost                                            integer
+fc_nb_streams                                      integer
 fc_pp_authority                                    string
 fc_pp_unique_id                                    string
 fc_pp_tlv(<id>)                                    string
@@ -21407,6 +21568,7 @@ fc_sacked                                          integer
 fc_src                                             ip
 fc_src_is_local                                    boolean
 fc_src_port                                        integer
+fc_settings_streams_limit                          integer
 fc_unacked                                         integer
 fe_defbe                                           string
 fe_id                                              integer
@@ -21639,6 +21801,9 @@ bc_http_major : integer
   for HTTP/0.9 to HTTP/1.1 or 2 for HTTP/2. Note, this is based on the on-wire
   encoding and not the version present in the request header.
 
+bc_nb_streams : integer
+  Returns the number of streams opened on the backend connection.
+
 bc_src : ip
   This is the source ip address of the connection on the server side, which is
   the server address HAProxy connected from. It is of type IP and works on both
@@ -21652,6 +21817,11 @@ bc_src_port : integer
 bc_srv_queue : integer
   Number of streams de-queued while waiting for a connection slot on the
   target server. This is the equivalent of %sq in the log-format.
+
+bc_settings_streams_limit : integer
+  Returns the maximum number of streams allowed on the backend connection. For
+  TCP and HTTP/1.1 connections, it is always 1. For other protocols, it depends
+  on the settings negociated with the server.
 
 be_id : integer
   Returns an integer containing the current backend's id. It can be used in
@@ -21785,13 +21955,13 @@ fc_err : integer
   Returns the ID of the error that might have occurred on the current
   connection. Any strictly positive value of this fetch indicates that the
   connection did not succeed and would result in an error log being output (as
-  described in section 8.2.6). See the "fc_err_str" fetch for a full list of
+  described in section 8.2.5). See the "fc_err_str" fetch for a full list of
   error codes and their corresponding error message.
 
 fc_err_str : string
   Returns an error message describing what problem happened on the current
   connection, resulting in a connection failure. This string corresponds to the
-  "message" part of the error log format (see section 8.2.6). See below for a
+  "message" part of the error log format (see section 8.2.5). See below for a
   full list of error codes and their corresponding error messages :
 
   +----+---------------------------------------------------------------------------+
@@ -21876,6 +22046,9 @@ fc_lost : integer
   connection. If the server connection is not established, if the connection is
   not TCP or if the operating system does not support TCP_INFO, for example
   Linux kernels before 2.4, the sample fetch fails.
+
+fc_nb_streams : integer
+  Returns the number of streams opened on the frontend connection.
 
 fc_pp_authority : string
   Returns the first authority TLV sent by the client in the PROXY protocol
@@ -21962,6 +22135,10 @@ fc_src_port : integer
   connection on the client side. Only "tcp-request connection" rules may alter
   this address. See "src-port" for details.
 
+fc_settings_streams_limit : integer
+  Returns the maximum number of streams allowed on the frontend connection. For
+  TCP and HTTP/1.1 connections, it is always 1. For other protocols, it depends
+  on the settings negociated with the client.
 
 fc_unacked : integer
   Returns the unacked counter measured by the kernel for the client connection.
@@ -23596,7 +23773,7 @@ Warning : Following sample fetches are ignored if used from HTTP proxies. They
           HTTP proxies use structured content. Thus raw representation of
           these data are meaningless. A warning is emitted if an ACL relies on
           one of the following sample fetches. But it is not possible to detect
-          all invalid usage (for instance inside a log-format string or a
+          all invalid usage (for instance inside a Custom log format or a
           sample expression). So be careful.
 
 Summary of sample fetch methods in this section and their respective types:
@@ -23604,9 +23781,13 @@ Summary of sample fetch methods in this section and their respective types:
   keyword                                             output type
 ----------------------------------------------------+-------------
 bs.id                                                 integer
+bs.aborted                                            boolean
+bs.rst_code                                           integer
 distcc_body(<token>[,<occ>])                          binary
 distcc_param(<token>[,<occ>])                         integer
 fs.id                                                 integer
+fs.aborted                                            boolean
+fs.rst_code                                           integer
 payload(<offset>,<length>)                            binary
 payload_lv(<offset1>,<length>[,<offset2>])            binary
 req.len                                               integer
@@ -23642,6 +23823,16 @@ bs.id : integer
   Returns the multiplexer's stream ID on the server side. It is the
   multiplexer's responsibility to return the appropriate information.
 
+bs.aborted: boolean
+  Returns true is an abort was received from the server for the current
+  stream. Otherwise false is returned.
+
+bs.rst_code: integer
+  Returns the reset code received from the server for the current stream. The
+  code of the H2 RST_STREAM frame or the QUIC STOP_SENDING frame received from
+  the server is returned. The sample fetch fails if no abort was received or if
+  the server stream is not an H2/QUIC stream.
+
 distcc_body(<token>[,<occ>]) : binary
   Parses a distcc message and returns the body associated to occurrence #<occ>
   of the token <token>. Occurrences start at 1, and when unspecified, any may
@@ -23672,6 +23863,16 @@ fs.id : integer
   Returns the multiplexer's stream ID on the client side. It is the
   multiplexer's responsibility to return the appropriate information. For
   instance, on a raw TCP, 0 is always returned because there is no stream.
+
+fs.aborted: boolean
+  Returns true is an abort was received from the client for the current
+  stream. Otherwise false is returned.
+
+fs.rst_code: integer
+  Returns the reset code received from the client for the current stream. The
+  code of the H2 RST_STREAM frame or the QUIC STOP_SENDING frame received from
+  the client is returned. The sample fetch fails if no abort was received or
+  if the client stream is not an H2/QUIC stream.
 
 payload(<offset>,<length>) : binary (deprecated)
   This is an alias for "req.payload" when used in the context of a request (e.g.
@@ -24213,7 +24414,7 @@ hdr([<name>[,<occ>]]) : string
 
 request_date([<unit>]) : integer
   This is the exact date when the first byte of the HTTP request was received
-  by HAProxy (log-format tag %tr). This is computed from accept_date +
+  by HAProxy (log-format alias %tr). This is computed from accept_date +
   handshake time (%Th) + idle time (%Ti).
 
   Returns a value in number of seconds since epoch.
@@ -24480,8 +24681,8 @@ req.hdr_names([<delim>]) : string
 req.ver : string
 req_ver : string (deprecated)
   Returns the version string from the HTTP request, for example "1.1". This can
-  be useful for ACL. For logs use the "%HV" log variable. Some predefined ACL
-  already check for versions 1.0 and 1.1.
+  be useful for ACL. For logs use the "%HV" logformat alias. Some predefined
+  ACL already check for versions 1.0 and 1.1.
 
   Common values are "1.0", "1.1", "2.0" or "3.0".
 
@@ -25709,38 +25910,104 @@ regular traffic log (see option httplog or option httpslog).
 8.2.6. Custom log format
 ------------------------
 
-When the default log formats are not sufficient, it is possible to define new
-ones in very fine details. As creating a log-format from scratch is not always
-a trivial task, it is strongly recommended to first have a look at the existing
-formats ("option tcplog", "option httplog", "option httpslog"), pick the one
-looking the closest to the expectation, copy its "log-format" equivalent string
-and adjust it.
+Historically, custom log formats were only used to produce logs. But their
+convenience when used to produce a string by assembling multiple complex
+expressions has got them adopted by many directives which used to take only
+a string in argument and which may now also take an such a Custom log format
+definition. Such arguments, which are commonly designated by "<fmt>" in this
+document, are defined exactly the same way as the argument to the "log-format"
+directive, described here.
 
-HAProxy understands some log format variables. % precedes log format variables.
-Variables can take arguments using braces ('{}'), and multiple arguments are
-separated by commas within the braces. Flags may be added or removed by
-prefixing them with a '+' or '-' sign.
+When it comes to logs and when the default log formats are not sufficient, it
+is possible to define new ones in very fine details. As creating a log-format
+from scratch is not always a trivial task, it is strongly recommended to first
+have a look at the existing formats ("option tcplog", "option httplog", "option
+httpslog"), pick the one looking the closest to the expectation, copy its
+"log-format" equivalent string and adjust it.
 
-Special variable "%o" may be used to propagate its flags to all other
-variables on the same format string. This is particularly handy with quoted
-("Q") and escaped ("E") string formats.
+A Custom log format definition is a single argument from a configuration
+perspective. This means that it may not contain blanks (spaces or tabs), unless
+these blanks are escaped using the backslash character ('\'), or the whole
+definition is enclosed between quotes (which is the recommended way to use
+them). The use of unquoted format strings is not recommended anymore as history
+has shown that it was very error prone since a single missing backslash
+character could result in silent truncation of the format. Such configurations
+are still commonly encountered due to the massive adoption of log formats after
+version 1.5-dev9, 3 years before quotes were usable, but it is recommended to
+convert them to quoted strings and to drop the backslashes now.
 
-If a variable is named between square brackets ('[' .. ']') then it is used
+A log format definition is made of any number of log format items separated
+by text and spaces. A log format item starts with character '%'. In order to
+emit a verbatim '%', it must be preceded by another '%' resulting in '%%'.
+
+Logformat items may either be aliases or sample expressions:
+
+If an item is named between square brackets ('[' .. ']') then it is used
 as a sample expression rule (see section 7.3). This it useful to add some
 less common information such as the client's SSL certificate's DN, or to log
-the key that would be used to store an entry into a stick table.
+the key that would be used to store an entry into a stick table. It is also
+commonly used with non-log actions (header manipulation, variables etc).
 
-Note: spaces must be escaped. In configuration directives "log-format",
-"log-format-sd" and "unique-id-format", spaces are considered as
-delimiters and are merged. In order to emit a verbatim '%', it must be
-preceded by another '%' resulting in '%%'.
+Else if the item is named using an alpha-numerical name, it is an alias.
+(Refer to the table below for the list of available aliases)
+
+Items can take arguments using braces ('{}'), and multiple arguments are
+separated by commas within the braces. Flags may be added or removed by
+prefixing them with a '+' or '-' sign (see below for the list of available
+flags).
+
+Special alias "%o" may be used to propagate its flags to all other
+logformat items on the same format string. This is particularly handy with
+quoted ("Q") and escaped ("E") string formats.
+
+Special alias "%OG" may be used to retrieve the log origin (when / where
+the log was generated) in a human readable format. It is particularly useful
+with "option logasap" because some log variables or sample fetches could report
+incomplete values or behave diffently depending on when / where the logformat
+expression was evaluated. Possible values are:
+  - "sess_error": log was generated during session error handling
+  - "sess_killed": log was generated during session abortion (killed
+    embryonic session)
+  - "txn_accept": log was generated right after frontend conn was accepted
+  - "txn_request": log was generated after client request was received
+  - "txn_connect": log was generated after backend connection establishment
+  - "txn_response": log was generated during server response handling
+  - "txn_close": log was generated at the final txn step, before closing
+  - "unspec": unknown or not specified
+"%OG" is only relevant in logging context.
+
+Items can optionally be named using ('()'). The name must be provided right
+after '%' (before arguments). It will automatically be used as key name when
+encoding flag such as "json" or "cbor" is set. When no encoding flag is
+specified (default), item name will be ignored. It is also possible to force
+the item's output to a given type by appending ':type' after the name, like
+this: %(itemname:itemtype)aliasname or %(itemname:itemtype)[expr] where
+itemtype may be 'str', 'sint' or 'bool'. Specifying the type is only relevant
+when an encoding method is used. Also, it is supported to provide an empty name
+to force the output type on an anonymous item: %(:itemtype), ie: when encoding
+is not set globally, see flags definitions below for more information.
+
+Due to the original goal of custom log formats to be used for logging only,
+there is a special case made of non-printable and unsafe characters (those
+outside ASCII codes 32 to 126 plus a few other ones) depending where they are
+used. Section 8.6 describes what's done exactly for logs in order to make sure
+one will not send unsafe codes that alter the readability of the output in a
+terminal. When used to form header fields, health checks or payload responses,
+the rules are less strict and only characters forbidden in HTTP header fields
+are replaced by their hexadecimal encoding preceded by character '%'. This is
+normally not a problem, but it might affect the output when the character was
+expected to be reproduced verbatim (e.g. when building an error page or a full
+response payload, where line feeds could appear as "%0A").
+
+Note: in configuration directives "log-format", "log-format-sd" and
+"unique-id-format", spaces are considered as delimiters and are merged.
 
 Note: when using the RFC5424 syslog message format, the characters '"',
 '\' and ']' inside PARAM-VALUE should be escaped with '\' as prefix (see
 https://tools.ietf.org/html/rfc5424#section-6.3.3 for more details). In
 such cases, the use of the flag "E" should be considered.
 
-Flags are :
+Supported item flags are (may be enabled/disabled from item's arguments):
   * Q: quote a string
   * X: hexadecimal representation (IPs, Ports, %Ts, %rt, %pid)
   * E: escape characters '"', '\' and ']' in a string with '\' as prefix
@@ -25752,14 +26019,14 @@ Flags are :
          don't expect. Thus it is mainly intended for use with set-var-fmt,
          rings and binary-capable log endpoints.
          This option can only be set globally (with %o), it will be ignored
-         if set on an individual node's options.
+         if set on an individual item's options.
   * json: automatically encode value in JSON format
-          (when set globally, only named format variables are considered)
+          (when set globally, only named logformat items are considered)
           Incomplete numerical values (e.g.: '%B' when logasap is used),
           which are normally prefixed with '+' without encoding, will be
           encoded as-is. Also, '+E' option will be ignored.
   * cbor: automatically encode value in CBOR format
-          (when set globally, only named format variables are considered)
+          (when set globally, only named logformat items are considered)
           By default, cbor encoded data is represented in HEX form so
           that it remains printable on stdout an can be used with usual
           syslog endpoints.
@@ -25767,7 +26034,7 @@ Flags are :
           as-is and '+E' option will be ignored.
           When combined with '+bin' option, it will directly generate raw
           binary CBOR payload. Be careful, because it will obviously generate
-          non-printable chars, thus it is mainly intented for use with
+          non-printable chars, thus it is mainly intended for use with
           set-var-fmt, rings and binary-capable log endpoints.
 
   Example:
@@ -25780,13 +26047,13 @@ Flags are :
     log-format "%{+json}o %(request)r %(custom_expr)[str(custom)]"
     log-format "%{+cbor}o %(request)r %(custom_expr)[str(custom)]"
 
-Please refer to the table below for currently defined variables :
+Please refer to the table below for currently defined aliases :
 
   +---+------+------------------------------------------------------+---------+
-  | R | var  | field name (8.2.2 and 8.2.3 for description)         | type    |
+  | R | alias| field name (8.2.2 and 8.2.3 for description)         | type    |
   |   |      | sample fetch alternative                             |         |
   +===+======+======================================================+=========+
-  |   | %o   | special variable, apply flags on all next var        |         |
+  |   | %o   | special, apply flags on all following items          |         |
   +---+------+------------------------------------------------------+---------+
   |                          date formats                                     |
   +---+------+------------------------------------------------------+---------+
@@ -25877,6 +26144,7 @@ Please refer to the table below for currently defined variables :
   |   |      | HTTP/%[req.ver]                                      |         |
   +---+------+------------------------------------------------------+---------+
   |   | %ID  | unique-id                                            | string  |
+  |   |      | %[unique-id]                                         |         |
   +---+------+------------------------------------------------------+---------+
   |   | %ST  | status_code                                          | numeric |
   |   |      | %[txn.status]                                        |         |
@@ -25934,6 +26202,8 @@ Please refer to the table below for currently defined variables :
   |   | %hsl | captured_response_headers CLF style                  | string  |
   |   |      |                                                      | list    |
   +---+------+------------------------------------------------------+---------+
+  | L | %OG  | human readable log origin                            | string  |
+  +---+------+------------------------------------------------------+---------+
   |   | %pid | PID                                                  |         |
   |   |      | %[pid]                                               | numeric |
   +---+------+------------------------------------------------------+---------+
@@ -25971,7 +26241,7 @@ Please refer to the table below for currently defined variables :
   | H | %tsc | termination_state with cookie status                 | string  |
   +---+------+------------------------------------------------------+---------+
 
-    R = Restrictions : H = mode http only ; S = SSL only
+    R = Restrictions : H = mode http only ; S = SSL only ; L = log only
 
 
 8.3. Advanced logging options
@@ -26049,6 +26319,82 @@ useful information from the logs. Do this only if you have no other
 alternative.
 
 
+8.3.5. Log profiles
+-------------------
+
+While some directives such as "log-format", "log-format-sd", "error-log-format"
+or "log-tag" make it possible to configure log formatting globally or at the
+proxy level, it may be relevant to configure such settings as close as possible
+to the log endpoints, that is, per "log" directive.
+
+This is where "log-profile" section comes into play: "log-profile" may be
+defined anywhere in the configuration. This section accepts a set of different
+keywords that are used to describe how the logs emitted for a given `log`
+directive should be built.
+
+From a "log" directive, one can choose to use a specific log-profile by its
+name. The same profile may be used from multiple "log" directives.
+
+log-profile <name>
+  Creates a new log profile identified as <name>
+
+log-tag <string>
+  Override syslog log tag set globally or per-proxy using "log-tag" directive.
+
+on <step> [format <fmt>] [sd <sd_fmt>]
+  Override the log-format string normally used to build the log line at
+  <step> logging step. <fmt> is used to override "log-format" or
+  "error-log-format" strings (depending on the <step>) whereas <sd_fmt> is
+  used to override "log-format-sd" string. Possible values for <step> are:
+
+  - "accept"   : override log-format if the log is generated right after
+                 frontend conn was accepted
+  - "request"  : override log-format if the log is generated after client
+                 request was received
+  - "connect"  : override log-format if the log is generated after backend
+                 connection establishment
+  - "response" : override log-format if the log is generated during server
+                 response handling
+  - "close"    : override log-format if the log is generated at the final
+                 transaction (txn) step
+  - "error"    : override error-log-format for if the log is generated due
+                 to a transaction error
+  - "any"      : override both log-format and error-log-format for all logging
+                 steps, unless a more precise step override is declared.
+
+  This setting is only relevant for "log" directives used from contexts where
+  using "log-format" directive makes sense (e.g.: http and tcp proxies).
+  Else it will simply be ignored.
+
+  Example :
+
+    log-profile myprof
+
+      log-tag "custom-tag"
+
+      on error format "%ci: error"
+      on any sd "custom-sd"
+
+    listen myproxy
+      mode http
+      option httplog
+      log-tag "normal"
+
+      log stdout format rfc5424 local0
+      # success:
+      # <134>1 2024-06-12T10:09:11.823400+02:00 - normal 224482 - - 127.0.0.1:53594 [12/Jun/2024:10:09:11.814] myproxy myproxy/<NOSRV> 0/-1/-1/-1/0 200 49 - - LR-- 1/1/0/0/0 0/0 "GET / HTTP/1.1"
+      #
+      # error:
+      # <134>1 2024-06-12T10:09:44.810929+02:00 - normal 224482 - - 127.0.0.1:59258 [12/Jun/2024:10:09:44.426] myproxy myproxy/<NOSRV> -1/-1/-1/-1/384 400 0 - - CR-- 1/1/0/0/0 0/0 "<BADREQ>"
+
+      log 127.0.0.1:514 format rfc5424 profile myprof local0
+      # success:
+      # <134>1 2024-06-12T10:09:11.823428+02:00 - custom-tag 224482 - custom-sd 127.0.0.1:53594 [12/Jun/2024:10:09:11.814] myproxy myproxy/<NOSRV> 0/-1/-1/-1/0 200 49 - - LR-- 1/1/0/0/0 0/0 "GET / HTTP/1.1"
+      #
+      # error:
+      # <134>1 2024-06-12T10:09:51.566524+02:00 - custom-tag 224482 - - 127.0.0.1: error
+
+
 8.4. Timing events
 ------------------
 
@@ -26091,7 +26437,7 @@ Timings events in TCP mode:
     all request to calculate the amortized value. The second and subsequent
     request will always report zero here.
 
-    This timer is named %Th as a log-format tag, and fc.timer.handshake as a
+    This timer is named %Th as a log-format alias, and fc.timer.handshake as a
     sample fetch.
 
   - Ti: is the idle time before the HTTP request (HTTP mode only). This timer
@@ -26104,7 +26450,7 @@ Timings events in TCP mode:
     pending until they need it. This delay will be reported as the idle time. A
     value of -1 indicates that nothing was received on the connection.
 
-    This timer is named %Ti as a log-format tag, and req.timer.idle as a
+    This timer is named %Ti as a log-format alias, and req.timer.idle as a
     sample fetch.
 
   - TR: total time to get the client request (HTTP mode only). It's the time
@@ -26115,7 +26461,7 @@ Timings events in TCP mode:
     since most requests fit in a single packet. A large time may indicate a
     request typed by hand during a test.
 
-    This timer is named %TR as a log-format tag, and req.timer.hdr as a
+    This timer is named %TR as a log-format alias, and req.timer.hdr as a
     sample fetch.
 
   - Tq: total time to get the client request from the accept date or since the
@@ -26126,7 +26472,7 @@ Timings events in TCP mode:
     it in favor of TR nowadays, as the idle time adds a lot of noise to the
     reports.
 
-    This timer is named %Tq as a log-format tag, and req.timer.tq as a
+    This timer is named %Tq as a log-format alias, and req.timer.tq as a
     sample fetch.
 
   - Tw: total time spent in the queues waiting for a connection slot. It
@@ -26135,7 +26481,7 @@ Timings events in TCP mode:
     requests. The value "-1" means that the request was killed before reaching
     the queue, which is generally what happens with invalid or denied requests.
 
-    This timer is named %Tw as a log-format tag, and req.timer.queue as a
+    This timer is named %Tw as a log-format alias, and req.timer.queue as a
     sample fetch.
 
   - Tc: total time to establish the TCP connection to the server. It's the time
@@ -26144,7 +26490,7 @@ Timings events in TCP mode:
     the matching SYN/ACK packet in return. The value "-1" means that the
     connection never established.
 
-    This timer is named %Tc as a log-format tag, and bc.timer.connect as a
+    This timer is named %Tc as a log-format alias, and bc.timer.connect as a
     sample fetch.
 
   - Tr: server response time (HTTP mode only). It's the time elapsed between
@@ -26159,7 +26505,7 @@ Timings events in TCP mode:
     header (empty line) was never seen, most likely because the server timeout
     stroke before the server managed to process the request.
 
-    This timer is named %Tr as a log-format tag, and res.timer.hdr as a
+    This timer is named %Tr as a log-format alias, and res.timer.hdr as a
     sample fetch.
 
   - Td: this is the total transfer time of the response payload till the last
@@ -26169,7 +26515,7 @@ Timings events in TCP mode:
     The data sent are not guaranteed to be received by the client, they can be
     stuck in either the kernel or the network.
 
-    This timer is named %Td as a log-format tag, and res.timer.data as a
+    This timer is named %Td as a log-format alias, and res.timer.data as a
     sample fetch.
 
   - Ta: total active time for the HTTP request, between the moment the proxy
@@ -26184,7 +26530,7 @@ Timings events in TCP mode:
     Timers with "-1" values have to be excluded from this equation. Note that
     "Ta" can never be negative.
 
-    This timer is named %Ta as a log-format tag, and txn.timer.total as a
+    This timer is named %Ta as a log-format alias, and txn.timer.total as a
     sample fetch.
 
   - Tt: total stream duration time, between the moment the proxy accepted it
@@ -26199,7 +26545,7 @@ Timings events in TCP mode:
     mode, "Ti", "Tq" and "Tr" have to be excluded too. Note that "Tt" can never
     be negative and that for HTTP, Tt is simply equal to (Th+Ti+Ta).
 
-    This timer is named %Tt as a log-format tag, and fc.timer.total as a
+    This timer is named %Tt as a log-format alias, and fc.timer.total as a
     sample fetch.
 
   - Tu: total estimated time as seen from client, between the moment the proxy
@@ -26211,7 +26557,7 @@ Timings events in TCP mode:
     option is specified. In this case, it only equals (Th+TR+Tw+Tc+Tr), and is
     prefixed with a '+' sign.
 
-    This timer is named %Tu as a log-format tag, and txn.timer.user as a
+    This timer is named %Tu as a log-format alias, and txn.timer.user as a
     sample fetch.
 
 These timers provide precious indications on trouble causes. Since the TCP
@@ -26931,9 +27277,6 @@ the Stream Processing Offload Protocol (SPOP).
 For all information about the SPOE configuration and the SPOP specification, see
 "doc/SPOE.txt".
 
-WARNING: The SPOE filter is now deprecated. Use 'expose-deprecated-directives'
-         to silent warnings if you must use it.
-
 9.4. Cache
 ----------
 
@@ -27276,8 +27619,8 @@ no option mpxs-conns
 
 set-param <name> <fmt> [ { if | unless } <condition> ]
   Set a FastCGI parameter that should be passed to this application. Its
-  value, defined by <fmt> must follows the log-format rules (see section 8.2.4
-  "Custom Log format"). It may optionally be followed by an ACL-based
+  value, defined by <fmt> must follows the Custom log format rules (see section
+  8.2.6 "Custom Log format"). It may optionally be followed by an ACL-based
   condition, in which case it will only be evaluated if the condition is true.
 
   With this directive, it is possible to overwrite the value of default FastCGI
