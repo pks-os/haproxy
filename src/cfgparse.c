@@ -2977,6 +2977,11 @@ init_proxies_list_stage1:
 			cfgerr += proxy_cfg_ensure_no_http(curproxy);
 			break;
 
+		case PR_MODE_SPOP:
+			cfgerr += proxy_cfg_ensure_no_http(curproxy);
+			cfgerr += proxy_cfg_ensure_no_log(curproxy);
+			break;
+
 		case PR_MODE_PEERS:
 		case PR_MODES:
 			/* should not happen, bug gcc warn missing switch statement */
@@ -3913,6 +3918,8 @@ out_uri_auth_compat:
 
 			if ((curproxy->mode != PR_MODE_HTTP) && (curproxy->options & PR_O_REUSE_MASK) != PR_O_REUSE_NEVR)
 				curproxy->options &= ~PR_O_REUSE_MASK;
+			if (curproxy->mode == PR_MODE_SPOP)
+				curproxy->options |= PR_O_REUSE_ALWS;
 
 			if ((curproxy->mode != PR_MODE_HTTP) && newsrv->flags & SRV_F_RHTTP) {
 				ha_alert("%s '%s' : server %s uses reverse HTTP addressing which can only be used with HTTP mode.\n",
