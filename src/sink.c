@@ -565,19 +565,14 @@ static struct appctx *sink_forward_session_create(struct sink *sink, struct sink
 	if (sft->srv->log_proto == SRV_LOG_PROTO_OCTET_COUNTING)
 		applet = &sink_forward_oc_applet;
 
-	appctx = appctx_new_here(applet, NULL);
+	appctx = appctx_new_on(applet, NULL, statistical_prng_range(global.nbthread));
 	if (!appctx)
 		goto out_close;
 	appctx->svcctx = (void *)sft;
-
-	if (appctx_init(appctx) == -1)
-		goto out_free_appctx;
-
+	appctx_wakeup(appctx);
 	return appctx;
 
 	/* Error unrolling */
- out_free_appctx:
-	appctx_free_on_early_error(appctx);
  out_close:
 	return NULL;
 }

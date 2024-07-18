@@ -1195,8 +1195,10 @@ static int ssl_sock_load_ocsp(const char *path, SSL_CTX *ctx, struct ckch_store 
 		EVP_PKEY *pkey;
 
 		cb_arg = calloc(1, sizeof(*cb_arg));
-		if (!cb_arg)
+		if (!cb_arg) {
+			HA_SPIN_UNLOCK(OCSP_LOCK, &ocsp_tree_lock);
 			goto out;
+		}
 
 		cb_arg->is_single = 1;
 		cb_arg->s_ocsp = iocsp;
@@ -2611,12 +2613,6 @@ static int ssl_sock_load_cert_chain(const char *path, const struct ckch_data *da
 
 	if (data->chain) {
 		*find_chain = X509_chain_up_ref(data->chain);
-	} else {
-		/* Find Certificate Chain in global */
-		struct issuer_chain *issuer;
-		issuer = ssl_get0_issuer_chain(data->cert);
-		if (issuer)
-			*find_chain = X509_chain_up_ref(issuer->chain);
 	}
 
 	if (!*find_chain) {
