@@ -345,17 +345,15 @@ void sink_setup_proxy(struct proxy *px)
 	sink_proxies_list = px;
 }
 
-/*
- * IO Handler to handle message push to syslog tcp server.
- * It takes its context from appctx->svcctx.
- */
-static void sink_forward_io_handler(struct appctx *appctx)
+static void _sink_forward_io_handler(struct appctx *appctx,
+                                     ssize_t (*msg_handler)(void *ctx, struct ist v1, struct ist v2, size_t ofs, size_t len))
 {
 	struct stconn *sc = appctx_sc(appctx);
 	struct sink_forward_target *sft = appctx->svcctx;
 	struct sink *sink = sft->sink;
 	struct ring *ring = sink->ctx.ring;
 	size_t ofs, last_ofs;
+	size_t processed;
 	int ret = 0;
 
 	if (unlikely(se_fl_test(appctx->sedesc, (SE_FL_EOS|SE_FL_ERROR)))) {
@@ -364,7 +362,7 @@ static void sink_forward_io_handler(struct appctx *appctx)
 
 	/* if stopping was requested, close immediately */
 	if (unlikely(stopping))
-		goto close;
+		goto soft_close;
 
 	/* if the connection is not established, inform the stream that we want
 	 * to be notified whenever the connection completes.
@@ -378,13 +376,34 @@ static void sink_forward_io_handler(struct appctx *appctx)
 
 	HA_SPIN_LOCK(SFT_LOCK, &sft->lock);
 	if (appctx != sft->appctx) {
+		/* FIXME: is this even supposed to happen? */
 		HA_SPIN_UNLOCK(SFT_LOCK, &sft->lock);
-		goto close;
+		goto hard_close;
 	}
 
 	MT_LIST_DELETE(&appctx->wait_entry);
 
-	ret = ring_dispatch_messages(ring, appctx, &sft->ofs, &last_ofs, 0, applet_append_line);
+	ret = ring_dispatch_messages(ring, appctx, &sft->ofs, &last_ofs, 0,
+	                             msg_handler, &processed);
+	sft->e_processed += processed;
+
+	/* if server's max-reuse is set (>= 0), destroy the applet once the
+	 * connection has been reused at least 'max-reuse' times, which means
+	 * it has processed at least 'max-reuse + 1' events (applet will
+	 * perform a new connection attempt)
+	 */
+	if (sft->srv->max_reuse >= 0) {
+		uint max_reuse = sft->srv->max_reuse + 1;
+
+		if (max_reuse < sft->srv->max_reuse)
+			max_reuse = sft->srv->max_reuse; // overflow, cap to max value
+
+		if (sft->e_processed / max_reuse !=
+		    (sft->e_processed - processed) / max_reuse) {
+			HA_SPIN_UNLOCK(SFT_LOCK, &sft->lock);
+			goto soft_close;
+		}
+	}
 
 	if (ret) {
 		/* let's be woken up once new data arrive */
@@ -406,8 +425,20 @@ out:
 	co_skip(sc_oc(sc), sc_oc(sc)->output);
 	return;
 
-close:
+soft_close:
 	se_fl_set(appctx->sedesc, SE_FL_EOS|SE_FL_EOI);
+	return;
+hard_close:
+	se_fl_set(appctx->sedesc, SE_FL_EOS|SE_FL_ERROR);
+}
+
+/*
+ * IO Handler to handle message push to syslog tcp server.
+ * It takes its context from appctx->svcctx.
+ */
+static inline void sink_forward_io_handler(struct appctx *appctx)
+{
+	_sink_forward_io_handler(appctx, applet_append_line);
 }
 
 /*
@@ -415,64 +446,9 @@ close:
  * using octet counting frames
  * It takes its context from appctx->svcctx.
  */
-static void sink_forward_oc_io_handler(struct appctx *appctx)
+static inline void sink_forward_oc_io_handler(struct appctx *appctx)
 {
-	struct stconn *sc = appctx_sc(appctx);
-	struct sink_forward_target *sft = appctx->svcctx;
-	struct sink *sink = sft->sink;
-	struct ring *ring = sink->ctx.ring;
-	size_t ofs, last_ofs;
-	int ret = 0;
-
-	if (unlikely(se_fl_test(appctx->sedesc, (SE_FL_EOS|SE_FL_ERROR|SE_FL_SHR|SE_FL_SHW))))
-		goto out;
-
-	/* if stopping was requested, close immediately */
-	if (unlikely(stopping))
-		goto close;
-
-	/* if the connection is not established, inform the stream that we want
-	 * to be notified whenever the connection completes.
-	 */
-	if (sc_opposite(sc)->state < SC_ST_EST) {
-		applet_need_more_data(appctx);
-		se_need_remote_conn(appctx->sedesc);
-		applet_have_more_data(appctx);
-		goto out;
-	}
-
-	HA_SPIN_LOCK(SFT_LOCK, &sft->lock);
-	if (appctx != sft->appctx) {
-		HA_SPIN_UNLOCK(SFT_LOCK, &sft->lock);
-		goto close;
-	}
-
-	MT_LIST_DELETE(&appctx->wait_entry);
-
-	ret = ring_dispatch_messages(ring, appctx, &sft->ofs, &last_ofs, 0, syslog_applet_append_event);
-	if (ret) {
-		/* let's be woken up once new data arrive */
-		MT_LIST_APPEND(&ring->waiters, &appctx->wait_entry);
-		ofs = ring_tail(ring);
-		if (ofs != last_ofs) {
-			/* more data was added into the ring between the
-			 * unlock and the lock, and the writer might not
-			 * have seen us. We need to reschedule a read.
-			 */
-			applet_have_more_data(appctx);
-		} else
-			applet_have_no_more_data(appctx);
-	}
-	HA_SPIN_UNLOCK(SFT_LOCK, &sft->lock);
-
-  out:
-	/* always drain data from server */
-	co_skip(sc_oc(sc), sc_oc(sc)->output);
-	return;
-
-close:
-	se_fl_set(appctx->sedesc, SE_FL_EOS|SE_FL_EOI);
-	goto out;
+	_sink_forward_io_handler(appctx, syslog_applet_append_event);
 }
 
 void __sink_forward_session_deinit(struct sink_forward_target *sft)
@@ -495,6 +471,11 @@ static int sink_forward_session_init(struct appctx *appctx)
 	struct stream *s;
 	struct sockaddr_storage *addr = NULL;
 
+	/* sft init is performed asynchronously so <sft> must be manipulated
+	 * under the lock
+	 */
+	HA_SPIN_LOCK(SFT_LOCK, &sft->lock);
+
 	if (!sockaddr_alloc(&addr, &sft->srv->addr, sizeof(sft->srv->addr)))
 		goto out_error;
 	/* srv port should be learned from srv->svc_port not from srv->addr */
@@ -505,7 +486,7 @@ static int sink_forward_session_init(struct appctx *appctx)
 
 	s = appctx_strm(appctx);
 	s->scb->dst = addr;
-	s->scb->flags |= (SC_FL_RCV_ONCE|SC_FL_NOLINGER);
+	s->scb->flags |= (SC_FL_RCV_ONCE);
 
 	s->target = &sft->srv->obj_type;
 	s->flags = SF_ASSIGNED;
@@ -514,13 +495,18 @@ static int sink_forward_session_init(struct appctx *appctx)
 	s->uniq_id = 0;
 
 	applet_expect_no_data(appctx);
+
+	/* FIXME: redundant? was already assigned in process_sink_forward() */
 	sft->appctx = appctx;
+
+	HA_SPIN_UNLOCK(SFT_LOCK, &sft->lock);
 
 	return 0;
 
  out_free_addr:
 	sockaddr_free(&addr);
  out_error:
+	HA_SPIN_UNLOCK(SFT_LOCK, &sft->lock);
 	return -1;
 }
 
@@ -534,6 +520,7 @@ static void sink_forward_session_release(struct appctx *appctx)
 	HA_SPIN_LOCK(SFT_LOCK, &sft->lock);
 	if (sft->appctx == appctx)
 		__sink_forward_session_deinit(sft);
+	/* FIXME: is 'sft->appctx != appctx' even supposed to happen? */
 	HA_SPIN_UNLOCK(SFT_LOCK, &sft->lock);
 }
 
@@ -561,11 +548,43 @@ static struct appctx *sink_forward_session_create(struct sink *sink, struct sink
 {
 	struct appctx *appctx;
 	struct applet *applet = &sink_forward_applet;
+	uint best_tid, best_load;
+	int attempts, first;
 
 	if (sft->srv->log_proto == SRV_LOG_PROTO_OCTET_COUNTING)
 		applet = &sink_forward_oc_applet;
 
-	appctx = appctx_new_on(applet, NULL, statistical_prng_range(global.nbthread));
+	BUG_ON(!global.nbthread);
+	attempts = MIN(global.nbthread, 3);
+	first = 1;
+
+	/* to shut gcc warning */
+	best_tid = best_load = 0;
+
+	/* to help spread the load over multiple threads, try to find a
+	 * non-overloaded thread by picking a random thread and checking
+	 * its load. If we fail to find a non-overloaded thread after 3
+	 * attempts, let's pick the least overloaded one.
+	 */
+	while (attempts-- > 0) {
+		uint cur_tid;
+		uint cur_load;
+
+		cur_tid = statistical_prng_range(global.nbthread);
+		cur_load = HA_ATOMIC_LOAD(&ha_thread_ctx[cur_tid].rq_total);
+
+		if (first || cur_load < best_load) {
+			best_tid = cur_tid;
+			best_load = cur_load;
+		}
+		first = 0;
+
+		/* if we already found a non-overloaded thread, stop now */
+		if (HA_ATOMIC_LOAD(&ha_thread_ctx[best_tid].rq_total) < 3)
+			break;
+	}
+
+	appctx = appctx_new_on(applet, NULL, best_tid);
 	if (!appctx)
 		goto out_close;
 	appctx->svcctx = (void *)sft;
