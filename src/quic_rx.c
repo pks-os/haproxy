@@ -22,6 +22,7 @@
 #include <haproxy/quic_cid.h>
 #include <haproxy/quic_retransmit.h>
 #include <haproxy/quic_retry.h>
+#include <haproxy/quic_rules.h>
 #include <haproxy/quic_sock.h>
 #include <haproxy/quic_stream.h>
 #include <haproxy/quic_ssl.h>
@@ -91,7 +92,7 @@ static int qc_do_rm_hp(struct quic_conn *qc,
 
 	sample = pn + QUIC_PACKET_PN_MAXLEN;
 
-	if (!quic_tls_aes_decrypt(mask, sample, sizeof mask, tls_ctx->rx.hp_ctx)) {
+	if (!quic_tls_hp_decrypt(mask, sample, sizeof mask, tls_ctx->rx.hp_ctx, tls_ctx->rx.hp_key)) {
 		TRACE_ERROR("HP removing failed", QUIC_EV_CONN_RMHP, qc, pkt);
 		goto leave;
 	}
@@ -126,7 +127,7 @@ static int qc_pkt_decrypt(struct quic_conn *qc, struct quic_enc_level *qel,
 	unsigned char iv[QUIC_TLS_IV_LEN];
 	struct quic_tls_ctx *tls_ctx =
 		qc_select_tls_ctx(qc, qel, pkt->type, pkt->version);
-	EVP_CIPHER_CTX *rx_ctx = tls_ctx->rx.ctx;
+	QUIC_AEAD_CTX *rx_ctx = tls_ctx->rx.ctx;
 	unsigned char *rx_iv = tls_ctx->rx.iv;
 	size_t rx_iv_sz = tls_ctx->rx.ivlen;
 	unsigned char *rx_key = tls_ctx->rx.key;
@@ -1605,18 +1606,29 @@ static struct quic_conn *quic_rx_pkt_retrieve_conn(struct quic_rx_packet *pkt,
 				if (!quic_retry_token_check(pkt, dgram, l, qc, &token_odcid))
 					goto err;
 			}
-			else if (!(l->bind_conf->options & BC_O_QUIC_FORCE_RETRY) &&
-			         HA_ATOMIC_LOAD(&prx_counters->half_open_conn) >= global.tune.quic_retry_threshold) {
-				TRACE_PROTO("Initial without token, sending retry",
-				            QUIC_EV_CONN_LPKT, NULL, NULL, NULL, pkt->version);
-				if (send_retry(l->rx.fd, &dgram->saddr, pkt, pkt->version)) {
-					TRACE_ERROR("Error during Retry generation",
-					            QUIC_EV_CONN_LPKT, NULL, NULL, NULL, pkt->version);
+
+			if (!quic_init_exec_rules(l, dgram)) {
+				TRACE_USER("drop datagram on quic-initial rules", QUIC_EV_CONN_LPKT, NULL, NULL, NULL, pkt->version);
+				goto err;
+			}
+
+			/* No need to emit Retry if connection is refused. */
+			if (!pkt->token_len && !(dgram->flags & QUIC_DGRAM_FL_REJECT)) {
+				if ((l->bind_conf->options & BC_O_QUIC_FORCE_RETRY) ||
+				    HA_ATOMIC_LOAD(&prx_counters->half_open_conn) >= global.tune.quic_retry_threshold ||
+				    (dgram->flags & QUIC_DGRAM_FL_SEND_RETRY)) {
+
+					TRACE_PROTO("Initial without token, sending retry",
+						    QUIC_EV_CONN_LPKT, NULL, NULL, NULL, pkt->version);
+					if (send_retry(l->rx.fd, &dgram->saddr, pkt, pkt->version)) {
+						TRACE_ERROR("Error during Retry generation",
+							    QUIC_EV_CONN_LPKT, NULL, NULL, NULL, pkt->version);
+						goto out;
+					}
+
+					HA_ATOMIC_INC(&prx_counters->retry_sent);
 					goto out;
 				}
-
-				HA_ATOMIC_INC(&prx_counters->retry_sent);
-				goto out;
 			}
 
 			/* RFC 9000 7.2. Negotiating Connection IDs:
@@ -1670,6 +1682,9 @@ static struct quic_conn *quic_rx_pkt_retrieve_conn(struct quic_rx_packet *pkt,
 				eb64_insert(qc->cids, &conn_id->seq_num);
 				/* Initialize the next CID sequence number to be used for this connection. */
 				qc->next_cid_seq_num = 1;
+
+				if (dgram->flags & QUIC_DGRAM_FL_REJECT)
+					quic_set_connection_close(qc, quic_err_transport(QC_ERR_CONNECTION_REFUSED));
 			}
 
 			if (*new_tid != -1)
@@ -1797,24 +1812,6 @@ static int quic_rx_pkt_parse(struct quic_rx_packet *pkt,
 				TRACE_PROTO("Packet dropped",
 				            QUIC_EV_CONN_LPKT, NULL, NULL, NULL, pkt->version);
 				goto drop;
-			}
-
-			/* TODO Retry should be automatically activated if
-			 * suspect network usage is detected.
-			 */
-			if (!token_len) {
-				if (l->bind_conf->options & BC_O_QUIC_FORCE_RETRY) {
-					TRACE_PROTO("Initial without token, sending retry",
-					            QUIC_EV_CONN_LPKT, NULL, NULL, NULL, pkt->version);
-					if (send_retry(l->rx.fd, &dgram->saddr, pkt, pkt->version)) {
-						TRACE_PROTO("Error during Retry generation",
-						            QUIC_EV_CONN_LPKT, NULL, NULL, NULL, pkt->version);
-						goto drop_silent;
-					}
-
-					HA_ATOMIC_INC(&prx_counters->retry_sent);
-					goto drop_silent;
-				}
 			}
 
 			pkt->token = pos;
