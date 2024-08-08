@@ -3,6 +3,7 @@
 #include <import/eb64tree.h>
 
 #include <haproxy/api.h>
+#include <haproxy/buf.h>
 #include <haproxy/chunk.h>
 #include <haproxy/connection.h>
 #include <haproxy/dynbuf.h>
@@ -56,6 +57,7 @@ static void qcs_free(struct qcs *qcs)
 	struct qcc *qcc = qcs->qcc;
 
 	TRACE_ENTER(QMUX_EV_QCS_END, qcc->conn, qcs);
+	TRACE_STATE("releasing QUIC stream", QMUX_EV_QCS_END, qcc->conn, qcs);
 
 	/* Safe to use even if already removed from the list. */
 	LIST_DEL_INIT(&qcs->el_opening);
@@ -66,6 +68,7 @@ static void qcs_free(struct qcs *qcs)
 	/* Release stream endpoint descriptor. */
 	BUG_ON(qcs->sd && !se_fl_test(qcs->sd, SE_FL_ORPHAN));
 	sedesc_free(qcs->sd);
+	qcs->sd = NULL;
 
 	/* Release app-layer context. */
 	if (qcs->ctx && qcc->app_ops->detach)
@@ -148,6 +151,12 @@ static struct qcs *qcs_new(struct qcc *qcc, uint64_t id, enum qcs_type type)
 
 	qcs->err = 0;
 
+	/* Reset all timers and start base one. */
+	tot_time_reset(&qcs->timer.base);
+	tot_time_reset(&qcs->timer.buf);
+	tot_time_reset(&qcs->timer.fctl);
+	tot_time_start(&qcs->timer.base);
+
 	qcs->sd = sedesc_new();
 	if (!qcs->sd)
 		goto err;
@@ -175,6 +184,7 @@ static struct qcs *qcs_new(struct qcc *qcc, uint64_t id, enum qcs_type type)
 	}
 
  out:
+	TRACE_STATE("created new QUIC stream", QMUX_EV_QCS_NEW, qcc->conn, qcs);
 	TRACE_LEAVE(QMUX_EV_QCS_NEW, qcc->conn, qcs);
 	return qcs;
 
@@ -533,6 +543,7 @@ int qcc_notify_buf(struct qcc *qcc)
 	if (!LIST_ISEMPTY(&qcc->buf_wait_list)) {
 		qcs = LIST_ELEM(qcc->buf_wait_list.n, struct qcs *, el_buf);
 		LIST_DEL_INIT(&qcs->el_buf);
+		tot_time_stop(&qcs->timer.buf);
 		qcs_notify_send(qcs);
 		ret = 1;
 	}
@@ -1003,6 +1014,7 @@ struct buffer *qcc_get_stream_txbuf(struct qcs *qcs, int *err)
 	if (!out) {
 		if (qcc->flags & QC_CF_CONN_FULL) {
 			LIST_APPEND(&qcc->buf_wait_list, &qcs->el_buf);
+			tot_time_start(&qcs->timer.buf);
 			goto out;
 		}
 
@@ -1017,6 +1029,7 @@ struct buffer *qcc_get_stream_txbuf(struct qcs *qcs, int *err)
 
 			TRACE_STATE("hitting stream desc buffer limit", QMUX_EV_QCS_SEND, qcc->conn, qcs);
 			LIST_APPEND(&qcc->buf_wait_list, &qcs->el_buf);
+			tot_time_start(&qcs->timer.buf);
 			qcc->flags |= QC_CF_CONN_FULL;
 			goto out;
 		}
@@ -1101,6 +1114,7 @@ static void qcc_notify_fctl(struct qcc *qcc)
 	while (!LIST_ISEMPTY(&qcc->fctl_list)) {
 		qcs = LIST_ELEM(qcc->fctl_list.n, struct qcs *, el_fctl);
 		LIST_DEL_INIT(&qcs->el_fctl);
+		tot_time_stop(&qcs->timer.fctl);
 		qcs_notify_send(qcs);
 	}
 }
@@ -1453,8 +1467,10 @@ int qcc_recv_max_stream_data(struct qcc *qcc, uint64_t id, uint64_t max)
 				tasklet_wakeup(qcc->wait_event.tasklet);
 			}
 
-			if (unblock_soft)
+			if (unblock_soft) {
+				tot_time_stop(&qcs->timer.fctl);
 				qcs_notify_send(qcs);
+			}
 		}
 	}
 
@@ -1884,8 +1900,12 @@ void qcc_streams_sent_done(struct qcs *qcs, uint64_t data, uint64_t offset)
 		if (qcs->flags & (QC_SF_FIN_STREAM|QC_SF_DETACH)) {
 			/* Close stream locally. */
 			qcs_close_local(qcs);
-			/* Reset flag to not emit multiple FIN STREAM frames. */
-			qcs->flags &= ~QC_SF_FIN_STREAM;
+
+			if (qcs->flags & QC_SF_FIN_STREAM) {
+				qcs->stream->flags |= QC_SD_FL_WAIT_FOR_FIN;
+				/* Reset flag to not emit multiple FIN STREAM frames. */
+				qcs->flags &= ~QC_SF_FIN_STREAM;
+			}
 		}
 	}
 
@@ -2923,6 +2943,7 @@ static size_t qmux_strm_snd_buf(struct stconn *sc, struct buffer *buf,
 			TRACE_DEVEL("append to fctl-list",
 			            QMUX_EV_STRM_SEND, qcs->qcc->conn, qcs);
 			LIST_APPEND(&qcs->qcc->fctl_list, &qcs->el_fctl);
+			tot_time_start(&qcs->timer.fctl);
 		}
 		goto end;
 	}
@@ -2930,6 +2951,7 @@ static size_t qmux_strm_snd_buf(struct stconn *sc, struct buffer *buf,
 	if (qfctl_sblocked(&qcs->tx.fc)) {
 		TRACE_DEVEL("leaving on flow-control reached",
 		            QMUX_EV_STRM_SEND, qcs->qcc->conn, qcs);
+		tot_time_start(&qcs->timer.fctl);
 		goto end;
 	}
 
@@ -3197,12 +3219,34 @@ static int qmux_ctl(struct connection *conn, enum mux_ctl_type mux_ctl, void *ou
 static int qmux_sctl(struct stconn *sc, enum mux_sctl_type mux_sctl, void *output)
 {
 	int ret = 0;
-	struct qcs *qcs = __sc_mux_strm(sc);
+	const struct qcs *qcs = __sc_mux_strm(sc);
+	const struct qcc *qcc = qcs->qcc;
+	union mux_sctl_dbg_str_ctx *dbg_ctx;
+	struct buffer *buf;
 
 	switch (mux_sctl) {
 	case MUX_SCTL_SID:
 		if (output)
 			*((int64_t *)output) = qcs->id;
+		return ret;
+
+	case MUX_SCTL_DBG_STR:
+		dbg_ctx = output;
+		buf = get_trash_chunk();
+
+		if (dbg_ctx->arg.debug_flags & MUX_SCTL_DBG_STR_L_MUXS)
+			qmux_dump_qcs_info(buf, qcs);
+
+		if (dbg_ctx->arg.debug_flags & MUX_SCTL_DBG_STR_L_MUXC)
+			qmux_dump_qcc_info(buf, qcc);
+
+		if (dbg_ctx->arg.debug_flags & MUX_SCTL_DBG_STR_L_CONN)
+			chunk_appendf(buf, " conn.flg=%#08x", qcc->conn->flags);
+
+		if (dbg_ctx->arg.debug_flags & MUX_SCTL_DBG_STR_L_XPRT)
+			qcc->conn->xprt->dump_info(buf, qcc->conn);
+
+		dbg_ctx->ret.buf = *buf;
 		return ret;
 
 	default:

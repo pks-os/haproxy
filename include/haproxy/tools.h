@@ -1034,8 +1034,6 @@ static inline unsigned long long rdtsc()
  * The caller is responsible for freeing the <err> and <str> copy
  * memory area using free()
  */
-struct list;
-int list_append_word(struct list *li, const char *str, char **err);
 
 int dump_text(struct buffer *out, const char *buf, int bsize);
 int dump_binary(struct buffer *out, const char *buf, int bsize);
@@ -1218,5 +1216,8 @@ int openssl_compare_current_name(const char *name);
 /* vma helpers */
 void vma_set_name(void *addr, size_t size, const char *type, const char *name);
 void vma_set_name_id(void *addr, size_t size, const char *type, const char *name, unsigned int id);
+
+/* cfgparse helpers */
+char *fgets_from_mem(char* buf, int size, const char **position, const char *end);
 
 #endif /* _HAPROXY_TOOLS_H */
