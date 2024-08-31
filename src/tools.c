@@ -967,7 +967,7 @@ struct sockaddr_storage *str2ip2(const char *str, struct sockaddr_storage *sa, i
  */
 struct sockaddr_storage *str2sa_range(const char *str, int *port, int *low, int *high, int *fd,
                                       struct protocol **proto, struct net_addr_type *sa_type,
-                                      char **err, const char *pfx, char **fqdn, unsigned int opts)
+                                      char **err, const char *pfx, char **fqdn, int *alt, unsigned int opts)
 {
 	static THREAD_LOCAL struct sockaddr_storage ss;
 	struct sockaddr_storage *ret = NULL;
@@ -979,6 +979,7 @@ struct sockaddr_storage *str2sa_range(const char *str, int *port, int *low, int 
 	int new_fd = -1;
 	enum proto_type proto_type = 0; // to shut gcc warning
 	int ctrl_type = 0; // to shut gcc warning
+	int alt_proto = 0;
 
 	portl = porth = porta = 0;
 	if (fqdn)
@@ -1002,6 +1003,7 @@ struct sockaddr_storage *str2sa_range(const char *str, int *port, int *low, int 
 	    ((opts & (PA_O_STREAM|PA_O_DGRAM)) == (PA_O_DGRAM|PA_O_STREAM) && (opts & PA_O_DEFAULT_DGRAM))) {
 		proto_type = PROTO_TYPE_DGRAM;
 		ctrl_type = SOCK_DGRAM;
+		alt_proto = 1;
 	} else {
 		proto_type = PROTO_TYPE_STREAM;
 		ctrl_type = SOCK_STREAM;
@@ -1016,6 +1018,7 @@ struct sockaddr_storage *str2sa_range(const char *str, int *port, int *low, int 
 		str2 += 6;
 		proto_type = PROTO_TYPE_DGRAM;
 		ctrl_type = SOCK_DGRAM;
+		alt_proto = 1;
 	}
 	else if (strncmp(str2, "quic+", 5) == 0) {
 		str2 += 5;
@@ -1034,6 +1037,7 @@ struct sockaddr_storage *str2sa_range(const char *str, int *port, int *low, int 
 		ss.ss_family = AF_UNIX;
 		proto_type = PROTO_TYPE_DGRAM;
 		ctrl_type = SOCK_DGRAM;
+		alt_proto = 1;
 	}
 	else if (strncmp(str2, "uxst@", 5) == 0) {
 		str2 += 5;
@@ -1065,11 +1069,19 @@ struct sockaddr_storage *str2sa_range(const char *str, int *port, int *low, int 
 		proto_type = PROTO_TYPE_STREAM;
 		ctrl_type = SOCK_STREAM;
 	}
+	else if (strncmp(str2, "mptcp4@", 7) == 0) {
+		str2 += 7;
+		ss.ss_family = AF_INET;
+		proto_type = PROTO_TYPE_STREAM;
+		ctrl_type = SOCK_STREAM;
+		alt_proto = 1;
+	}
 	else if (strncmp(str2, "udp4@", 5) == 0) {
 		str2 += 5;
 		ss.ss_family = AF_INET;
 		proto_type = PROTO_TYPE_DGRAM;
 		ctrl_type = SOCK_DGRAM;
+		alt_proto = 1;
 	}
 	else if (strncmp(str2, "tcp6@", 5) == 0) {
 		str2 += 5;
@@ -1077,11 +1089,19 @@ struct sockaddr_storage *str2sa_range(const char *str, int *port, int *low, int 
 		proto_type = PROTO_TYPE_STREAM;
 		ctrl_type = SOCK_STREAM;
 	}
+	else if (strncmp(str2, "mptcp6@", 7) == 0) {
+		str2 += 7;
+		ss.ss_family = AF_INET6;
+		proto_type = PROTO_TYPE_STREAM;
+		ctrl_type = SOCK_STREAM;
+		alt_proto = 1;
+	}
 	else if (strncmp(str2, "udp6@", 5) == 0) {
 		str2 += 5;
 		ss.ss_family = AF_INET6;
 		proto_type = PROTO_TYPE_DGRAM;
 		ctrl_type = SOCK_DGRAM;
+		alt_proto = 1;
 	}
 	else if (strncmp(str2, "tcp@", 4) == 0) {
 		str2 += 4;
@@ -1089,11 +1109,19 @@ struct sockaddr_storage *str2sa_range(const char *str, int *port, int *low, int 
 		proto_type = PROTO_TYPE_STREAM;
 		ctrl_type = SOCK_STREAM;
 	}
+	else if (strncmp(str2, "mptcp@", 6) == 0) {
+		str2 += 6;
+		ss.ss_family = AF_UNSPEC;
+		proto_type = PROTO_TYPE_STREAM;
+		ctrl_type = SOCK_STREAM;
+		alt_proto = 1;
+	}
 	else if (strncmp(str2, "udp@", 4) == 0) {
 		str2 += 4;
 		ss.ss_family = AF_UNSPEC;
 		proto_type = PROTO_TYPE_DGRAM;
 		ctrl_type = SOCK_DGRAM;
+		alt_proto = 1;
 	}
 	else if (strncmp(str2, "quic4@", 6) == 0) {
 		str2 += 6;
@@ -1367,7 +1395,7 @@ struct sockaddr_storage *str2sa_range(const char *str, int *port, int *low, int 
 		 */
 		new_proto = protocol_lookup(ss.ss_family,
 					    proto_type,
-					    ctrl_type == SOCK_DGRAM);
+					    alt_proto);
 
 		if (!new_proto && (!fqdn || !*fqdn) && (ss.ss_family != AF_CUST_EXISTING_FD)) {
 			memprintf(err, "unsupported %s protocol for %s family %d address '%s'%s",
@@ -1408,6 +1436,8 @@ struct sockaddr_storage *str2sa_range(const char *str, int *port, int *low, int 
 		sa_type->proto_type = proto_type;
 		sa_type->xprt_type = (ctrl_type == SOCK_DGRAM) ? PROTO_TYPE_DGRAM : PROTO_TYPE_STREAM;
 	}
+	if (alt)
+		*alt = alt_proto;
 	free(back);
 	return ret;
 }
@@ -3684,6 +3714,33 @@ struct sockaddr_storage *ipcpy(const struct sockaddr_storage *source, struct soc
 
 	return dest;
 }
+
+/* Copy only the IP address from <saddr> socket address data into <buf> buffer.
+ * This is the responsibility of the caller to check the <buf> buffer is big
+ * enough to contain these socket address data.
+ * Return the number of bytes copied.
+ */
+size_t ipaddrcpy(unsigned char *buf, const struct sockaddr_storage *saddr)
+{
+	void *addr;
+	unsigned char *p;
+	size_t addr_len;
+
+	p = buf;
+	if (saddr->ss_family == AF_INET6) {
+		addr = &((struct sockaddr_in6 *)saddr)->sin6_addr;
+		addr_len = sizeof ((struct sockaddr_in6 *)saddr)->sin6_addr;
+	}
+	else {
+		addr = &((struct sockaddr_in *)saddr)->sin_addr;
+		addr_len = sizeof ((struct sockaddr_in *)saddr)->sin_addr;
+	}
+	memcpy(p, addr, addr_len);
+	p += addr_len;
+
+	return p - buf;
+}
+
 
 char *human_time(int t, short hz_div) {
 	static char rv[sizeof("24855d23h")+1];	// longest of "23h59m" and "59m59s"
@@ -6310,7 +6367,7 @@ const char *hash_ipanon(uint32_t scramble, char *ipstring, int hasport)
 			sa = &ss;
 		}
 		else {
-			sa = str2sa_range(ipstring, NULL, NULL, NULL, NULL, NULL, NULL, &errmsg, NULL, NULL,
+			sa = str2sa_range(ipstring, NULL, NULL, NULL, NULL, NULL, NULL, &errmsg, NULL, NULL, NULL,
 					  PA_O_PORT_OK | PA_O_STREAM | PA_O_DGRAM | PA_O_XPRT | PA_O_CONNECT |
 					  PA_O_PORT_RANGE | PA_O_PORT_OFS | PA_O_RESOLVE);
 			if (sa == NULL) {

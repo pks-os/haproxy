@@ -286,7 +286,7 @@ static inline int is_idchar(char c)
  */
 struct sockaddr_storage *str2sa_range(const char *str, int *port, int *low, int *high, int *fd,
                                       struct protocol **proto, struct net_addr_type *sa_type,
-                                      char **err, const char *pfx, char **fqdn, unsigned int opts);
+                                      char **err, const char *pfx, char **fqdn, int *alt, unsigned int opts);
 
 
 /* converts <addr> and <port> into a string representation of the address and port. This is sort
@@ -841,6 +841,11 @@ int ipcmp2net(const struct sockaddr_storage *addr, const struct net_addr *net);
  * Returns a pointer to the destination
  */
 struct sockaddr_storage *ipcpy(const struct sockaddr_storage *source, struct sockaddr_storage *dest);
+
+/* Copy only the IP address from <saddr> socket address data into <buf> buffer. *
+ * Return the number of bytes copied.
+ */
+size_t ipaddrcpy(unsigned char *buf, const struct sockaddr_storage *saddr);
 
 char *human_time(int t, short hz_div);
 
