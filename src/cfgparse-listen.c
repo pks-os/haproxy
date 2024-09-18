@@ -271,12 +271,29 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 			err_code |= ERR_ALERT | ERR_FATAL;
 		}
 
-		curproxy = (rc & PR_CAP_FE) ? proxy_fe_by_name(args[1]) : proxy_be_by_name(args[1]);
+		curproxy = NULL;
+		if (rc & PR_CAP_FE)
+			curproxy = proxy_fe_by_name(args[1]);
+
+		if (!curproxy && (rc & PR_CAP_BE))
+			curproxy = proxy_be_by_name(args[1]);
+
 		if (curproxy) {
+			/* same capability in common: always forbidden */
 			ha_alert("Parsing [%s:%d]: %s '%s' has the same name as %s '%s' declared at %s:%d.\n",
 				 file, linenum, proxy_cap_str(rc), args[1], proxy_type_str(curproxy),
 				 curproxy->id, curproxy->conf.file, curproxy->conf.line);
 				err_code |= ERR_ALERT | ERR_FATAL;
+		}
+		else {
+			curproxy = proxy_find_by_name(args[1], 0, 0);
+			if (curproxy) {
+				/* different capabilities but still same name: forbidden soon */
+				ha_warning("Parsing [%s:%d]: %s '%s' has the same name as %s '%s' declared at %s:%d. This is dangerous and will not be supported anymore in version 3.3.\n",
+				           file, linenum, proxy_cap_str(rc), args[1], proxy_type_str(curproxy),
+				           curproxy->id, curproxy->conf.file, curproxy->conf.line);
+				err_code |= ERR_WARN;
+			}
 		}
 
 		curproxy = log_forward_by_name(args[1]);
@@ -2208,11 +2225,13 @@ stats_error_parsing:
 					oldlogformat = "option httplog";
 				else if (curproxy->logformat.str == default_tcp_log_format)
 					oldlogformat = "option tcplog";
+				else if (curproxy->logformat.str == clf_tcp_log_format)
+					oldlogformat = "option tcplog clf";
 				else if (curproxy->logformat.str == clf_http_log_format)
 					oldlogformat = "option httplog clf";
 				else if (curproxy->logformat.str == default_https_log_format)
 					oldlogformat = "option httpslog";
-				ha_warning("parsing [%s:%d]: 'option httplog' overrides previous '%s' in 'defaults' section.\n",
+				ha_warning("parsing [%s:%d]: 'option httpslog' overrides previous '%s' in 'defaults' section.\n",
 					   file, linenum, oldlogformat);
 			}
 			lf_expr_deinit(&curproxy->logformat);
@@ -2323,6 +2342,45 @@ stats_error_parsing:
 				err_code |= ERR_ALERT | ERR_FATAL;
 				goto out;
 			}
+		}
+		else if (strcmp(args[1], "accept-invalid-http-request") == 0 ||
+			 strcmp(args[1], "accept-invalid-http-response") == 0) {
+			unsigned int val;
+
+			if (alertif_too_many_args_idx(0, 1, file, linenum, args, &err_code))
+				goto out;
+			if (warnifnotcap(curproxy, PR_MODE_HTTP, file, linenum, args[1], NULL)) {
+				err_code |= ERR_WARN;
+				goto out;
+			}
+
+			if (args[1][22] == 'q') {
+				ha_alert("parsing [%s:%d]: option '%s' is deprecated. please use 'option accept-unsafe-violations-in-http-request' if absolutely needed.\n",
+					 file, linenum, args[1]);
+				val = PR_O2_REQBUG_OK;
+			}
+			else {
+				ha_alert("parsing [%s:%d]: option '%s' is deprecated. please use 'option accept-unsafe-violations-in-http-response' if absolutely needed.\n",
+					 file, linenum, args[1]);
+				val = PR_O2_RSPBUG_OK;
+			}
+
+			curproxy->no_options2 &= ~val;
+			curproxy->options2    &= ~val;
+
+			switch (kwm) {
+			case KWM_STD:
+				curproxy->options2 |= val;
+				break;
+			case KWM_NO:
+				curproxy->no_options2 |= val;
+				break;
+			case KWM_DEF: /* already cleared */
+				break;
+			}
+
+			err_code |= ERR_WARN;
+			goto out;
 		}
 		else {
 			const char *best = proxy_find_best_option(args[1], common_options);
@@ -2660,6 +2718,8 @@ stats_error_parsing:
 				oldlogformat = "option httplog";
 			else if (curproxy->logformat.str == default_tcp_log_format)
 				oldlogformat = "option tcplog";
+			else if (curproxy->logformat.str == clf_tcp_log_format)
+				oldlogformat = "option tcplog clf";
 			else if (curproxy->logformat.str == clf_http_log_format)
 				oldlogformat = "option httplog clf";
 			else if (curproxy->logformat.str == default_https_log_format)
