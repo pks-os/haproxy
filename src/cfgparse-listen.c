@@ -229,6 +229,8 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 	struct acl_cond *cond = NULL;
 	char *errmsg = NULL;
 	struct bind_conf *bind_conf;
+	const char *file_prev = NULL;
+	int line_prev = 0;
 
 	if (!last_defproxy) {
 		/* we need a default proxy and none was created yet */
@@ -286,14 +288,6 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 				err_code |= ERR_ALERT | ERR_FATAL;
 		}
 
-		curproxy = log_forward_by_name(args[1]);
-		if (curproxy) {
-			ha_alert("Parsing [%s:%d]: %s '%s' has the same name as log forward section '%s' declared at %s:%d.\n",
-			         file, linenum, proxy_cap_str(rc), args[1],
-			         curproxy->id, curproxy->conf.file, curproxy->conf.line);
-			err_code |= ERR_ALERT | ERR_FATAL;
-		}
-
 		if ((*args[2] && (!*args[3] || strcmp(args[2], "from") != 0)) ||
 		    alertif_too_many_args(3, file, linenum, args, &err_code)) {
 			if (rc & PR_CAP_FE)
@@ -305,6 +299,47 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 	if (rc & PR_CAP_LISTEN) {  /* new proxy or defaults section */
 		const char *name = args[1];
 		int arg = 2;
+
+		/* conflict with log-forward forbidden for listen/frontend/backend/defaults */
+		curproxy = log_forward_by_name(args[1]);
+		if (curproxy) {
+			ha_alert("Parsing [%s:%d]: %s '%s' has the same name as log forward section '%s' declared at %s:%d.\n",
+			         file, linenum, proxy_cap_str(rc), args[1],
+			         curproxy->id, curproxy->conf.file, curproxy->conf.line);
+			err_code |= ERR_ALERT | ERR_FATAL;
+		}
+
+		if (*args[1] && rc & PR_CAP_DEF) {
+			/* for default proxies, if another one has the same
+			 * name and was explicitly referenced, this is an error
+			 * that we must reject. E.g.
+			 *     defaults def
+			 *     backend bck from def
+			 *     defaults def
+			 */
+			curproxy = proxy_find_by_name(args[1], PR_CAP_DEF, 0);
+			if (curproxy && curproxy->flags & PR_FL_EXPLICIT_REF) {
+				ha_alert("Parsing [%s:%d]: %s '%s' has the same name as another defaults section declared at"
+					 " %s:%d which was explicitly referenced hence cannot be replaced. Please remove or"
+					 " rename one of the offending defaults section.\n",
+					 file, linenum, proxy_cap_str(rc), args[1],
+					 curproxy->conf.file, curproxy->conf.line);
+				err_code |= ERR_ALERT | ERR_ABORT;
+				goto out;
+			}
+
+			/* if the other proxy exists, we don't need to keep it
+			 * since neither will support being explicitly referenced
+			 * so let's drop it from the index but keep a reference to
+			 * its location for error messages.
+			 */
+			if (curproxy) {
+				file_prev = curproxy->conf.file;
+				line_prev = curproxy->conf.line;
+				proxy_unref_or_destroy_defaults(curproxy);
+				curproxy = NULL;
+			}
+		}
 
 		curproxy = proxy_find_by_name(args[1], 0, 0);
 		if (!curproxy && !(rc & PR_CAP_DEF))
@@ -318,19 +353,6 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 				   curproxy->id, curproxy->conf.file, curproxy->conf.line);
 			err_code |= ERR_WARN;
 		}
-		else if (rc & PR_CAP_DEF) {
-			/* only defaults need to be checked here, other proxies
-			 * have already been above.
-			 */
-			curproxy = log_forward_by_name(args[1]);
-			if (curproxy) {
-				ha_warning("Parsing [%s:%d]: %s '%s' has the same name as log-forward section '%s' declared at %s:%d."
-					   " This is dangerous and will not be supported anymore in version 3.3.\n",
-					   file, linenum, proxy_cap_str(rc), args[1],
-					   curproxy->id, curproxy->conf.file, curproxy->conf.line);
-				err_code |= ERR_WARN;
-			}
-		}
 
 		if (rc & PR_CAP_DEF && strcmp(args[1], "from") == 0 && *args[2] && !*args[3]) {
 			// also support "defaults from blah" (no name then)
@@ -343,8 +365,6 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 			curr_defproxy = last_defproxy;
 
 		if (strcmp(args[arg], "from") == 0) {
-			struct ebpt_node *next_by_name;
-
 			curr_defproxy = proxy_find_by_name(args[arg+1], PR_CAP_DEF, 0);
 
 			if (!curr_defproxy) {
@@ -353,12 +373,11 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 				goto out;
 			}
 
-			if ((next_by_name = ebpt_next_dup(&curr_defproxy->conf.by_name))) {
-				struct proxy *px2 = container_of(next_by_name, struct proxy, conf.by_name);
-
+			if (curr_defproxy->conf.line_prev) {
 				ha_alert("parsing [%s:%d] : ambiguous defaults section name '%s' referenced by %s '%s' exists at least at %s:%d and %s:%d.\n",
 					 file, linenum, args[arg+1], proxy_cap_str(rc), name,
-					 curr_defproxy->conf.file, curr_defproxy->conf.line, px2->conf.file, px2->conf.line);
+					 curr_defproxy->conf.file, curr_defproxy->conf.line,
+					 curr_defproxy->conf.file_prev, curr_defproxy->conf.line_prev);
 				err_code |= ERR_ALERT | ERR_FATAL;
 			}
 
@@ -385,6 +404,9 @@ int cfg_parse_listen(const char *file, int linenum, char **args, int kwm)
 			err_code |= ERR_ALERT | ERR_ABORT;
 			goto out;
 		}
+
+		curproxy->conf.file_prev = file_prev;
+		curproxy->conf.line_prev = line_prev;
 
 		if (curr_defproxy && (!LIST_ISEMPTY(&curr_defproxy->http_req_rules)        ||
 				      !LIST_ISEMPTY(&curr_defproxy->http_res_rules)        ||
