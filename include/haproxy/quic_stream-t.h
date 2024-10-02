@@ -15,14 +15,14 @@
  * can be freed in strict order.
  */
 struct qc_stream_buf {
+	struct eb_root acked_frms; /* storage for out-of-order ACKs */
+	struct eb64_node offset_node; /* node for qc_stream_desc buf tree */
 	struct buffer buf; /* STREAM payload */
-	struct list list; /* element for qc_stream_desc list */
 	int sbuf;
 };
 
 #define QC_SD_FL_RELEASE	0x00000001 /* set when MUX has finished to use this stream */
 #define QC_SD_FL_WAIT_FOR_FIN	0x00000002 /* set if sent FIN is waiting for acknowledgement */
-#define QC_SD_FL_OOB_BUF	0x00000004 /* buffers not accounted against conn limit */
 
 /* QUIC STREAM descriptor.
  *
@@ -37,16 +37,17 @@ struct qc_stream_desc {
 	struct eb64_node by_id; /* node for quic_conn tree */
 	struct quic_conn *qc;
 
-	struct list buf_list; /* buffers waiting for ACK, oldest offset first */
 	struct qc_stream_buf *buf; /* current buffer used by the MUX */
 	uint64_t buf_offset; /* base offset of current buffer */
 
 	uint64_t ack_offset; /* last acknowledged offset */
-	struct eb_root acked_frms; /* ACK frames tree for non-contiguous ACK ranges */
+	struct eb_root buf_tree; /* list of active and released buffers */
 
 	int flags; /* QC_SD_FL_* values */
 
-	void *ctx; /* MUX specific context */
+	void (*notify_send)(struct qc_stream_desc *, uint64_t offset, uint64_t len);
+	void (*notify_room)(struct qc_stream_desc *, uint64_t room);
+	void *ctx; /* notify context */
 };
 
 #endif /* USE_QUIC */

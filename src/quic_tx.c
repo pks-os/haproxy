@@ -23,6 +23,7 @@
 #include <haproxy/quic_retransmit.h>
 #include <haproxy/quic_retry.h>
 #include <haproxy/quic_sock.h>
+#include <haproxy/quic_stream.h>
 #include <haproxy/quic_tls.h>
 #include <haproxy/quic_trace.h>
 #include <haproxy/ssl_sock-t.h>
@@ -490,10 +491,8 @@ int qc_send_mux(struct quic_conn *qc, struct list *frms)
 	}
 
 	TRACE_STATE("preparing data (from MUX)", QUIC_EV_CONN_TXPKT, qc);
-	qc->flags |= QUIC_FL_CONN_TX_MUX_CONTEXT;
 	qel_register_send(&send_list, qc->ael, frms);
 	ret = qc_send(qc, 0, &send_list);
-	qc->flags &= ~QUIC_FL_CONN_TX_MUX_CONTEXT;
 
 	TRACE_LEAVE(QUIC_EV_CONN_TXPKT, qc);
 	return ret;
@@ -1662,12 +1661,9 @@ static int qc_build_frms(struct list *outlist, struct list *inlist,
 				LIST_DEL_INIT(&cf->list);
 				LIST_APPEND(outlist, &cf->list);
 
-				/* Do not notify MUX on retransmission. */
-				if (qc->flags & QUIC_FL_CONN_TX_MUX_CONTEXT) {
-					qcc_streams_sent_done(cf->stream.stream->ctx,
-					                      cf->stream.len,
-					                      cf->stream.offset.key);
-				}
+				qc_stream_desc_send(cf->stream.stream,
+				                    cf->stream.offset.key,
+				                    cf->stream.len);
 			}
 			else {
 				struct quic_frame *new_cf;
@@ -1709,16 +1705,13 @@ static int qc_build_frms(struct list *outlist, struct list *inlist,
 				cf->stream.offset.key += dlen;
 				cf->stream.data = (unsigned char *)b_peek(&cf_buf, dlen);
 
-				/* Do not notify MUX on retransmission. */
-				if (qc->flags & QUIC_FL_CONN_TX_MUX_CONTEXT) {
-					qcc_streams_sent_done(new_cf->stream.stream->ctx,
-					                      new_cf->stream.len,
-					                      new_cf->stream.offset.key);
-				}
+				qc_stream_desc_send(new_cf->stream.stream,
+				                    new_cf->stream.offset.key,
+				                    new_cf->stream.len);
 			}
 
 			/* TODO the MUX is notified about the frame sending via
-			 * previous qcc_streams_sent_done call. However, the
+			 * previous qc_stream_desc_send call. However, the
 			 * sending can fail later, for example if the sendto
 			 * system call returns an error. As the MUX has been
 			 * notified, the transport layer is responsible to

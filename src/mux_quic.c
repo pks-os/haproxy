@@ -32,6 +32,9 @@
 DECLARE_POOL(pool_head_qcc, "qcc", sizeof(struct qcc));
 DECLARE_POOL(pool_head_qcs, "qcs", sizeof(struct qcs));
 
+static void qmux_ctrl_send(struct qc_stream_desc *, uint64_t data, uint64_t offset);
+static void qmux_ctrl_room(struct qc_stream_desc *, uint64_t room);
+
 static void qcs_free_ncbuf(struct qcs *qcs, struct ncbuf *ncbuf)
 {
 	struct buffer buf;
@@ -78,7 +81,10 @@ static void qcs_free(struct qcs *qcs)
 		qcc->app_ops->detach(qcs);
 
 	/* Release qc_stream_desc buffer from quic-conn layer. */
-	qc_stream_desc_release(qcs->stream, qcs->tx.fc.off_real);
+	if (qcs->stream) {
+		qc_stream_desc_sub_send(qcs->stream, NULL);
+		qc_stream_desc_release(qcs->stream, qcs->tx.fc.off_real, qcc);
+	}
 
 	/* Free Rx buffer. */
 	qcs_free_ncbuf(qcs, &qcs->rx.ncbuf);
@@ -179,6 +185,9 @@ static struct qcs *qcs_new(struct qcc *qcc, uint64_t id, enum qcs_type type)
 			TRACE_ERROR("qc_stream_desc alloc failure", QMUX_EV_QCS_NEW, qcc->conn, qcs);
 			goto err;
 		}
+
+		qc_stream_desc_sub_send(qcs->stream, qmux_ctrl_send);
+		qc_stream_desc_sub_room(qcs->stream, qmux_ctrl_room);
 	}
 
 	if (qcc->app_ops->attach && qcc->app_ops->attach(qcs, qcc->ctx)) {
@@ -525,11 +534,114 @@ void qcs_notify_send(struct qcs *qcs)
 	}
 }
 
+/* Returns total number of bytes not already sent to quic-conn layer. */
+static uint64_t qcs_prep_bytes(const struct qcs *qcs)
+{
+	struct buffer *out = qc_stream_buf_get(qcs->stream);
+	uint64_t diff, base_off;
+
+	if (!out)
+		return 0;
+
+	/* if ack_offset < buf_offset, it points to an older buffer. */
+	base_off = MAX(qcs->stream->buf_offset, qcs->stream->ack_offset);
+	diff = qcs->tx.fc.off_real - base_off;
+	return b_data(out) - diff;
+}
+
+/* Used as a callback for qc_stream_desc layer to notify about emission of a
+ * STREAM frame of <data> length starting at <offset>.
+ */
+static void qmux_ctrl_send(struct qc_stream_desc *stream, uint64_t data, uint64_t offset)
+{
+	struct qcs *qcs = stream->ctx;
+	struct qcc *qcc = qcs->qcc;
+	uint64_t diff;
+
+	TRACE_ENTER(QMUX_EV_QCS_SEND, qcc->conn, qcs);
+
+	/* Real off MUST always be the greatest offset sent. */
+	BUG_ON(offset > qcs->tx.fc.off_real);
+
+	/* check if the STREAM frame has already been notified. It can happen
+	 * for retransmission.
+	 */
+	if (offset + data < qcs->tx.fc.off_real ||
+	    (!data && (!(qcs->flags & QC_SF_FIN_STREAM) || qc_stream_buf_get(qcs->stream) || qcs_prep_bytes(qcs)))) {
+		TRACE_DEVEL("offset already notified", QMUX_EV_QCS_SEND, qcc->conn, qcs);
+		goto out;
+	}
+
+	qcs_idle_open(qcs);
+
+	diff = offset + data - qcs->tx.fc.off_real;
+	if (diff) {
+		struct quic_fctl *fc_conn = &qcc->tx.fc;
+		struct quic_fctl *fc_strm = &qcs->tx.fc;
+
+		/* Ensure real offset never exceeds soft value. */
+		BUG_ON(fc_conn->off_real + diff > fc_conn->off_soft);
+		BUG_ON(fc_strm->off_real + diff > fc_strm->off_soft);
+
+		/* increase offset sum on connection */
+		if (qfctl_rinc(fc_conn, diff)) {
+			TRACE_STATE("connection flow-control reached",
+			            QMUX_EV_QCS_SEND, qcc->conn);
+		}
+
+		/* increase offset on stream */
+		if (qfctl_rinc(fc_strm, diff)) {
+			TRACE_STATE("stream flow-control reached",
+			            QMUX_EV_QCS_SEND, qcc->conn, qcs);
+		}
+		/* Release buffer if everything sent and buf is full or stream is waiting for room. */
+		if (!qcs_prep_bytes(qcs) &&
+		    (b_full(&qcs->stream->buf->buf) || qcs->flags & QC_SF_BLK_MROOM)) {
+			qc_stream_buf_release(qcs->stream);
+			qcs->flags &= ~QC_SF_BLK_MROOM;
+			qcs_notify_send(qcs);
+		}
+
+		/* Add measurement for send rate. This is done at the MUX layer
+		 * to account only for STREAM frames without retransmission.
+		 */
+		increment_send_rate(diff, 0);
+	}
+
+	if (!qc_stream_buf_get(qcs->stream) || !qcs_prep_bytes(qcs)) {
+		/* Remove stream from send_list if all was sent. */
+		LIST_DEL_INIT(&qcs->el_send);
+		TRACE_STATE("stream sent done", QMUX_EV_QCS_SEND, qcc->conn, qcs);
+
+		if (qcs->flags & (QC_SF_FIN_STREAM|QC_SF_DETACH)) {
+			/* Close stream locally. */
+			qcs_close_local(qcs);
+
+			if (qcs->flags & QC_SF_FIN_STREAM) {
+				qcs->stream->flags |= QC_SD_FL_WAIT_FOR_FIN;
+				/* Reset flag to not emit multiple FIN STREAM frames. */
+				qcs->flags &= ~QC_SF_FIN_STREAM;
+			}
+		}
+	}
+
+ out:
+	TRACE_LEAVE(QMUX_EV_QCS_SEND, qcc->conn, qcs);
+}
+
 /* Returns true if <qcc> buffer window does not have room for a new buffer. */
 static inline int qcc_bufwnd_full(const struct qcc *qcc)
 {
 	const struct quic_conn *qc = qcc->conn->handle.qc;
 	return qcc->tx.buf_in_flight >= qc->path->cwnd;
+}
+
+static void qmux_ctrl_room(struct qc_stream_desc *stream, uint64_t room)
+{
+	/* Context is different for active and released streams. */
+	struct qcc *qcc = !(stream->flags & QC_SD_FL_RELEASE) ?
+	  ((struct qcs *)stream->ctx)->qcc : stream->ctx;
+	qcc_notify_buf(qcc, room);
 }
 
 /* Report that one or several stream-desc buffers have been released for <qcc>
@@ -737,9 +849,10 @@ void qcs_send_metadata(struct qcs *qcs)
 	/* Reserved for stream with Tx capability. */
 	BUG_ON(!qcs->stream);
 	/* Cannot use if some data already transferred for this stream. */
-	BUG_ON(!LIST_ISEMPTY(&qcs->stream->buf_list));
+	BUG_ON(qcs->stream->ack_offset || !eb_is_empty(&qcs->stream->buf_tree));
 
-	qcs->stream->flags |= QC_SD_FL_OOB_BUF;
+	qcs->flags |= QC_SF_TXBUB_OOB;
+	qc_stream_desc_sub_room(qcs->stream, NULL);
 }
 
 struct stconn *qcs_attach_sc(struct qcs *qcs, struct buffer *buf, char fin)
@@ -1047,7 +1160,6 @@ struct buffer *qcc_get_stream_txbuf(struct qcs *qcs, int *err, int small)
 {
 	struct qcc *qcc = qcs->qcc;
 	struct buffer *out = qc_stream_buf_get(qcs->stream);
-	const int unlimited = qcs->stream->flags & QC_SD_FL_OOB_BUF;
 
 	/* Stream must not try to reallocate a buffer if currently waiting for one. */
 	BUG_ON(LIST_INLIST(&qcs->el_buf));
@@ -1055,7 +1167,7 @@ struct buffer *qcc_get_stream_txbuf(struct qcs *qcs, int *err, int small)
 	*err = 0;
 
 	if (!out) {
-		if (likely(!unlimited)) {
+		if (likely(!(qcs->flags & QC_SF_TXBUB_OOB))) {
 			if ((qcc->flags & QC_CF_CONN_FULL)) {
 				LIST_APPEND(&qcc->buf_wait_list, &qcs->el_buf);
 				tot_time_start(&qcs->timer.buf);
@@ -1078,7 +1190,7 @@ struct buffer *qcc_get_stream_txbuf(struct qcs *qcs, int *err, int small)
 			goto out;
 		}
 
-		if (likely(!unlimited))
+		if (likely(!(qcs->flags & QC_SF_TXBUB_OOB)))
 			qcc->tx.buf_in_flight += b_size(out);
 	}
 
@@ -1097,12 +1209,11 @@ struct buffer *qcc_realloc_stream_txbuf(struct qcs *qcs)
 {
 	struct qcc *qcc = qcs->qcc;
 	struct buffer *out = qc_stream_buf_get(qcs->stream);
-	const int unlimited = qcs->stream->flags & QC_SD_FL_OOB_BUF;
 
 	/* Stream must not try to reallocate a buffer if currently waiting for one. */
 	BUG_ON(LIST_INLIST(&qcs->el_buf));
 
-	if (likely(!unlimited)) {
+	if (likely(!(qcs->flags & QC_SF_TXBUB_OOB))) {
 		/* Reduce buffer window. As such there is always some space
 		 * left for a new buffer allocation.
 		 */
@@ -1116,26 +1227,11 @@ struct buffer *qcc_realloc_stream_txbuf(struct qcs *qcs)
 		goto out;
 	}
 
-	if (likely(!unlimited))
+	if (likely(!(qcs->flags & QC_SF_TXBUB_OOB)))
 		qcc->tx.buf_in_flight += b_size(out);
 
  out:
 	return out && b_size(out) ? out : NULL;
-}
-
-/* Returns total number of bytes not already sent to quic-conn layer. */
-static uint64_t qcs_prep_bytes(const struct qcs *qcs)
-{
-	struct buffer *out = qc_stream_buf_get(qcs->stream);
-	uint64_t diff, base_off;
-
-	if (!out)
-		return 0;
-
-	/* if ack_offset < buf_offset, it points to an older buffer. */
-	base_off = MAX(qcs->stream->buf_offset, qcs->stream->ack_offset);
-	diff = qcs->tx.fc.off_real - base_off;
-	return b_data(out) - diff;
 }
 
 /* Try to realign <out> buffer for <qcs> stream. This is done only if there is
@@ -1942,85 +2038,6 @@ static int qcs_build_stream_frm(struct qcs *qcs, struct buffer *out, char fin,
 	return -1;
 }
 
-/* This function must be called by the upper layer to inform about the sending
- * of a STREAM frame for <qcs> instance. The frame is of <data> length and on
- * <offset>.
- */
-void qcc_streams_sent_done(struct qcs *qcs, uint64_t data, uint64_t offset)
-{
-	struct qcc *qcc = qcs->qcc;
-	uint64_t diff;
-
-	TRACE_ENTER(QMUX_EV_QCS_SEND, qcc->conn, qcs);
-
-	/* Real off MUST always be the greatest offset sent. */
-	BUG_ON(offset > qcs->tx.fc.off_real);
-
-	/* check if the STREAM frame has already been notified. It can happen
-	 * for retransmission.
-	 */
-	if (offset + data < qcs->tx.fc.off_real) {
-		TRACE_DEVEL("offset already notified", QMUX_EV_QCS_SEND, qcc->conn, qcs);
-		goto out;
-	}
-
-	qcs_idle_open(qcs);
-
-	diff = offset + data - qcs->tx.fc.off_real;
-	if (diff) {
-		struct quic_fctl *fc_conn = &qcc->tx.fc;
-		struct quic_fctl *fc_strm = &qcs->tx.fc;
-
-		/* Ensure real offset never exceeds soft value. */
-		BUG_ON(fc_conn->off_real + diff > fc_conn->off_soft);
-		BUG_ON(fc_strm->off_real + diff > fc_strm->off_soft);
-
-		/* increase offset sum on connection */
-		if (qfctl_rinc(fc_conn, diff)) {
-			TRACE_STATE("connection flow-control reached",
-			            QMUX_EV_QCS_SEND, qcc->conn);
-		}
-
-		/* increase offset on stream */
-		if (qfctl_rinc(fc_strm, diff)) {
-			TRACE_STATE("stream flow-control reached",
-			            QMUX_EV_QCS_SEND, qcc->conn, qcs);
-		}
-		/* Release buffer if everything sent and buf is full or stream is waiting for room. */
-		if (!qcs_prep_bytes(qcs) &&
-		    (b_full(&qcs->stream->buf->buf) || qcs->flags & QC_SF_BLK_MROOM)) {
-			qc_stream_buf_release(qcs->stream);
-			qcs->flags &= ~QC_SF_BLK_MROOM;
-			qcs_notify_send(qcs);
-		}
-
-		/* Add measurement for send rate. This is done at the MUX layer
-		 * to account only for STREAM frames without retransmission.
-		 */
-		increment_send_rate(diff, 0);
-	}
-
-	if (!qc_stream_buf_get(qcs->stream) || !qcs_prep_bytes(qcs)) {
-		/* Remove stream from send_list if all was sent. */
-		LIST_DEL_INIT(&qcs->el_send);
-		TRACE_STATE("stream sent done", QMUX_EV_QCS_SEND, qcc->conn, qcs);
-
-		if (qcs->flags & (QC_SF_FIN_STREAM|QC_SF_DETACH)) {
-			/* Close stream locally. */
-			qcs_close_local(qcs);
-
-			if (qcs->flags & QC_SF_FIN_STREAM) {
-				qcs->stream->flags |= QC_SD_FL_WAIT_FOR_FIN;
-				/* Reset flag to not emit multiple FIN STREAM frames. */
-				qcs->flags &= ~QC_SF_FIN_STREAM;
-			}
-		}
-	}
-
- out:
-	TRACE_LEAVE(QMUX_EV_QCS_SEND, qcc->conn, qcs);
-}
-
 /* Returns true if subscribe set, false otherwise. */
 static int qcc_subscribe_send(struct qcc *qcc)
 {
@@ -2609,6 +2626,7 @@ static void qcc_release(struct qcc *qcc)
 {
 	struct connection *conn = qcc->conn;
 	struct eb64_node *node;
+	struct quic_conn *qc = conn->handle.qc;
 
 	TRACE_ENTER(QMUX_EV_QCC_END, conn);
 
@@ -2623,6 +2641,14 @@ static void qcc_release(struct qcc *qcc)
 		struct qcs *qcs = eb64_entry(node, struct qcs, by_id);
 		node = eb64_next(node);
 		qcs_free(qcs);
+	}
+
+	/* unsubscribe from all remaining qc_stream_desc */
+	node = eb64_first(&qc->streams_by_id);
+	while (node) {
+		struct qc_stream_desc *stream = eb64_entry(node, struct qc_stream_desc, by_id);
+		qc_stream_desc_sub_room(stream, NULL);
+		node = eb64_next(node);
 	}
 
 	tasklet_free(qcc->wait_event.tasklet);
@@ -3429,7 +3455,10 @@ void qcc_show_quic(struct qcc *qcc)
 		if (!quic_stream_is_uni(qcs->id) || !quic_stream_is_local(qcc, qcs->id))
 			chunk_appendf(&trash, " rxoff=%llu", (ullong)qcs->rx.offset);
 		if (!quic_stream_is_uni(qcs->id) || !quic_stream_is_remote(qcc, qcs->id))
-			chunk_appendf(&trash, " txoff=%llu", (ullong)qcs->tx.fc.off_real);
+			chunk_appendf(&trash, " txoff=%llu(%llu) msd=%llu",
+			              (ullong)qcs->tx.fc.off_real,
+			              (ullong)qcs->tx.fc.off_soft - (ullong)qcs->tx.fc.off_soft,
+			              (ullong)qcs->tx.fc.limit);
 		chunk_appendf(&trash, "\n");
 		node = eb64_next(node);
 	}

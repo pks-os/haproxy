@@ -201,63 +201,6 @@ static int qc_pkt_decrypt(struct quic_conn *qc, struct quic_enc_level *qel,
 	return ret;
 }
 
-/* Remove from <stream> the acknowledged frames.
- *
- * Returns 1 if at least one frame was removed else 0.
- */
-static int quic_stream_try_to_consume(struct quic_conn *qc,
-                                      struct qc_stream_desc *stream)
-{
-	int ret;
-	struct eb64_node *frm_node;
-
-	TRACE_ENTER(QUIC_EV_CONN_ACKSTRM, qc);
-
-	ret = 0;
-	frm_node = eb64_first(&stream->acked_frms);
-	while (frm_node) {
-		struct qf_stream *strm_frm;
-		struct quic_frame *frm;
-		size_t offset, len;
-		int fin;
-
-		strm_frm = eb64_entry(frm_node, struct qf_stream, offset);
-		frm = container_of(strm_frm, struct quic_frame, stream);
-		offset = strm_frm->offset.key;
-		len = strm_frm->len;
-		fin = frm->type & QUIC_STREAM_FRAME_TYPE_FIN_BIT;
-
-		if (offset > stream->ack_offset)
-			break;
-
-		if (qc_stream_desc_ack(&stream, offset, len, fin)) {
-			/* cf. next comment : frame may be freed at this stage. */
-			TRACE_DEVEL("stream consumed", QUIC_EV_CONN_ACKSTRM,
-			            qc, stream ? strm_frm : NULL, stream);
-			ret = 1;
-		}
-
-		/* If stream is NULL after qc_stream_desc_ack(), it means frame
-		 * has been freed. with the stream frames tree. Nothing to do
-		 * anymore in here.
-		 */
-		if (!stream) {
-			qc_check_close_on_released_mux(qc);
-			ret = 1;
-			goto leave;
-		}
-
-		frm_node = eb64_next(frm_node);
-		eb64_delete(&strm_frm->offset);
-
-		qc_release_frm(qc, frm);
-	}
-
- leave:
-	TRACE_LEAVE(QUIC_EV_CONN_ACKSTRM, qc);
-	return ret;
-}
-
 /* Handle <frm> frame whose packet it is attached to has just been acknowledged. The memory allocated
  * for this frame will be at least released in every cases.
  * Never fail.
@@ -273,9 +216,6 @@ static void qc_handle_newly_acked_frm(struct quic_conn *qc, struct quic_frame *f
 		struct qf_stream *strm_frm = &frm->stream;
 		struct eb64_node *node = NULL;
 		struct qc_stream_desc *stream = NULL;
-		const size_t offset = strm_frm->offset.key;
-		const size_t len = strm_frm->len;
-		const int fin = frm->type & QUIC_STREAM_FRAME_TYPE_FIN_BIT;
 
 		/* do not use strm_frm->stream as the qc_stream_desc instance
 		 * might be freed at this stage. Use the id to do a proper
@@ -293,30 +233,22 @@ static void qc_handle_newly_acked_frm(struct quic_conn *qc, struct quic_frame *f
 		}
 		stream = eb64_entry(node, struct qc_stream_desc, by_id);
 
-		TRACE_DEVEL("acked stream", QUIC_EV_CONN_ACKSTRM, qc, strm_frm, stream);
-		if (offset <= stream->ack_offset) {
-			if (qc_stream_desc_ack(&stream, offset, len, fin)) {
-				TRACE_DEVEL("stream consumed", QUIC_EV_CONN_ACKSTRM,
-				            qc, strm_frm, stream);
-			}
+		if (!qc_stream_desc_ack(stream, frm)) {
+			TRACE_DEVEL("stream consumed on ACK received", QUIC_EV_CONN_ACKSTRM,
+			            qc, strm_frm, stream);
 
-			if (!stream) {
+			if (qc_stream_desc_done(stream)) {
 				/* no need to continue if stream freed. */
 				TRACE_DEVEL("stream released and freed", QUIC_EV_CONN_ACKSTRM, qc);
-				qc_release_frm(qc, frm);
 				qc_check_close_on_released_mux(qc);
-				break;
 			}
 
-			TRACE_DEVEL("stream consumed", QUIC_EV_CONN_ACKSTRM,
-			            qc, strm_frm, stream);
 			qc_release_frm(qc, frm);
 		}
 		else {
-			eb64_insert(&stream->acked_frms, &strm_frm->offset);
+			TRACE_DEVEL("handled out-of-order stream ACK", QUIC_EV_CONN_ACKSTRM,
+			            qc, strm_frm, stream);
 		}
-
-		quic_stream_try_to_consume(qc, stream);
 	}
 	break;
 	default:
