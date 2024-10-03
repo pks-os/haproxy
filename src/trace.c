@@ -449,8 +449,9 @@ static int trace_source_parse_verbosity(struct trace_source *src,
  */
 static int trace_parse_statement(char **args, char **msg)
 {
-	struct trace_source *src;
+	struct trace_source *orig_src, *src;
 	uint64_t *ev_ptr = NULL;
+	int cur_arg;
 
 	/* no error by default */
 	*msg = NULL;
@@ -480,24 +481,18 @@ static int trace_parse_statement(char **args, char **msg)
 	}
 
 	if (strcmp(args[1], "all") == 0) {
-		if (*args[2] &&
-		    strcmp(args[2], "follow") != 0 &&
-		    strcmp(args[2], "sink") != 0 &&
-		    strcmp(args[2], "level") != 0) {
-			memprintf(msg, "'%s' not applicable to meta-source 'all'", args[2]);
-			return LOG_ERR;
-		}
-		src = NULL;
+		orig_src = NULL;
 	}
 	else {
-		src = trace_find_source(args[1]);
-		if (!src) {
+		orig_src = trace_find_source(args[1]);
+		if (!orig_src) {
 			memprintf(msg, "No such trace source '%s'", args[1]);
 			return LOG_ERR;
 		}
 	}
 
-	if (!*args[2]) {
+	cur_arg = 2;
+	if (!*args[cur_arg]) {
 		*msg =  "Supported commands:\n"
 			"  event     : list/enable/disable source-specific event reporting\n"
 			//"  filter    : list/enable/disable generic filters\n"
@@ -512,10 +507,24 @@ static int trace_parse_statement(char **args, char **msg)
 		*msg = strdup(*msg);
 		return LOG_WARNING;
 	}
-	else if (strcmp(args[2], "follow") == 0) {
+
+  next_stmt:
+	if (!*args[cur_arg])
+		goto out;
+
+	src = orig_src;
+	if (src == NULL &&
+	    strcmp(args[cur_arg], "follow") != 0 &&
+	    strcmp(args[cur_arg], "sink") != 0 &&
+	    strcmp(args[cur_arg], "level") != 0) {
+		memprintf(msg, "'%s' not applicable to meta-source 'all'", args[cur_arg]);
+		return LOG_ERR;
+	}
+
+	if (strcmp(args[cur_arg], "follow") == 0) {
 		const struct trace_source *origin = src ? HA_ATOMIC_LOAD(&src->follow) : NULL;
 
-		if (!*args[3]) {
+		if (!*args[cur_arg+1]) {
 			/* no arg => report the list of supported sources as a warning */
 			if (origin)
 				chunk_printf(&trash, "Currently following source '%s'.\n", origin->name.ptr);
@@ -538,10 +547,10 @@ static int trace_parse_statement(char **args, char **msg)
 		}
 
 		origin = NULL;
-		if (strcmp(args[3], "none") != 0) {
-			origin = trace_find_source(args[3]);
+		if (strcmp(args[cur_arg+1], "none") != 0) {
+			origin = trace_find_source(args[cur_arg+1]);
 			if (!origin) {
-				memprintf(msg, "No such trace source '%s'", args[3]);
+				memprintf(msg, "No such trace source '%s'", args[cur_arg+1]);
 				return LOG_ERR;
 			}
 		}
@@ -552,13 +561,15 @@ static int trace_parse_statement(char **args, char **msg)
 			list_for_each_entry(src, &trace_sources, source_link)
 				if (src != origin)
 					HA_ATOMIC_STORE(&src->follow, origin);
+		cur_arg += 2;
+		goto next_stmt;
 	}
-	else if ((strcmp(args[2], "event") == 0 && (ev_ptr = &src->report_events)) ||
-	         (strcmp(args[2], "pause") == 0 && (ev_ptr = &src->pause_events)) ||
-	         (strcmp(args[2], "start") == 0 && (ev_ptr = &src->start_events)) ||
-	         (strcmp(args[2], "stop")  == 0 && (ev_ptr = &src->stop_events))) {
+	else if ((strcmp(args[cur_arg], "event") == 0 && (ev_ptr = &src->report_events)) ||
+	         (strcmp(args[cur_arg], "pause") == 0 && (ev_ptr = &src->pause_events)) ||
+	         (strcmp(args[cur_arg], "start") == 0 && (ev_ptr = &src->start_events)) ||
+	         (strcmp(args[cur_arg], "stop")  == 0 && (ev_ptr = &src->stop_events))) {
 		const struct trace_event *ev;
-		const char *name = args[3];
+		const char *name = args[cur_arg+1];
 		int neg = 0;
 		int i;
 
@@ -609,10 +620,8 @@ static int trace_parse_statement(char **args, char **msg)
 				HA_ATOMIC_STORE(&src->lockon_ptr, NULL);
 				HA_ATOMIC_STORE(&src->state, TRACE_STATE_STOPPED);
 			}
-			return 0;
 		}
-
-		if (strcmp(name, "none") == 0)
+		else if (strcmp(name, "none") == 0)
 			HA_ATOMIC_STORE(ev_ptr, 0);
 		else if (strcmp(name, "any") == 0) {
 			enum trace_state old = TRACE_STATE_STOPPED;
@@ -638,9 +647,12 @@ static int trace_parse_statement(char **args, char **msg)
 			if (ev_ptr == &src->start_events && HA_ATOMIC_LOAD(ev_ptr) != 0)
 				HA_ATOMIC_CAS(&src->state, &old, TRACE_STATE_WAITING);
 		}
+
+		cur_arg += 2;
+		goto next_stmt;
 	}
-	else if (strcmp(args[2], "sink") == 0) {
-		const char *name = args[3];
+	else if (strcmp(args[cur_arg], "sink") == 0) {
+		const char *name = args[cur_arg+1];
 		struct sink *sink;
 
 		if (!*name) {
@@ -671,9 +683,12 @@ static int trace_parse_statement(char **args, char **msg)
 		else
 			list_for_each_entry(src, &trace_sources, source_link)
 				HA_ATOMIC_STORE(&src->sink, sink);
+
+		cur_arg += 2;
+		goto next_stmt;
 	}
-	else if (strcmp(args[2], "level") == 0) {
-		const char *name = args[3];
+	else if (strcmp(args[cur_arg], "level") == 0) {
+		const char *name = args[cur_arg+1];
 		int level = -1;
 
 		if (*name)
@@ -706,9 +721,12 @@ static int trace_parse_statement(char **args, char **msg)
 		else
 			list_for_each_entry(src, &trace_sources, source_link)
 				HA_ATOMIC_STORE(&src->level, level);
+
+		cur_arg += 2;
+		goto next_stmt;
 	}
-	else if (strcmp(args[2], "lock") == 0) {
-		const char *name = args[3];
+	else if (strcmp(args[cur_arg], "lock") == 0) {
+		const char *name = args[cur_arg+1];
 
 		if (!*name) {
 			chunk_printf(&trash, "Supported lock-on criteria for source %s:\n", src->name.ptr);
@@ -850,9 +868,12 @@ static int trace_parse_statement(char **args, char **msg)
 			memprintf(msg, "Unsupported lock-on criterion '%s'", name);
 			return LOG_ERR;
 		}
+
+		cur_arg += 2;
+		goto next_stmt;
 	}
-	else if (strcmp(args[2], "verbosity") == 0) {
-		const char *name = args[3];
+	else if (strcmp(args[cur_arg], "verbosity") == 0) {
+		const char *name = args[cur_arg+1];
 		const struct name_desc *nd;
 		int verbosity = -1;
 
@@ -881,11 +902,16 @@ static int trace_parse_statement(char **args, char **msg)
 		}
 
 		HA_ATOMIC_STORE(&src->verbosity, verbosity);
+
+		cur_arg += 2;
+		goto next_stmt;
 	}
 	else {
-		memprintf(msg, "Unknown trace keyword '%s'", args[2]);
+		memprintf(msg, "Unknown trace keyword '%s'", args[cur_arg]);
 		return LOG_ERR;
 	}
+
+  out:
 	return 0;
 
 }
@@ -1025,7 +1051,72 @@ static int cfg_parse_trace(char **args, int section_type, struct proxy *curpx,
 		}
 		ha_free(&msg);
 	}
+
 	return 0;
+}
+
+/*
+ * parse a line in a <traces> section. Returns the error code, 0 if OK, or
+ * any combination of :
+ *  - ERR_ABORT: must abort ASAP
+ *  - ERR_FATAL: we can continue parsing but not start the service
+ *  - ERR_WARN: a warning has been emitted
+ *  - ERR_ALERT: an alert has been emitted
+ * Only the two first ones can stop processing, the two others are just
+ * indicators.
+ */
+int cfg_parse_traces(const char *file, int linenum, char **args, int inv)
+{
+	int err_code = 0;
+	char *errmsg = NULL;
+
+	if (strcmp(args[0], "traces") == 0) {  /* new section */
+		/* no option, nothing special to do */
+		alertif_too_many_args(0, file, linenum, args, &err_code);
+		goto out;
+	}
+	else {
+		struct cfg_kw_list *kwl;
+		const char *best;
+		int index;
+		int rc;
+
+		list_for_each_entry(kwl, &cfg_keywords.list, list) {
+			for (index = 0; kwl->kw[index].kw != NULL; index++) {
+				if (kwl->kw[index].section != CFG_TRACES)
+					continue;
+				if (strcmp(kwl->kw[index].kw, args[0]) == 0) {
+					if (check_kw_experimental(&kwl->kw[index], file, linenum, &errmsg)) {
+						ha_alert("%s\n", errmsg);
+						err_code |= ERR_ALERT | ERR_FATAL;
+						goto out;
+					}
+
+					rc = kwl->kw[index].parse(args, CFG_TRACES, NULL, NULL, file, linenum, &errmsg);
+					if (rc < 0) {
+						ha_alert("parsing [%s:%d] : %s\n", file, linenum, errmsg);
+						err_code |= ERR_ALERT | ERR_FATAL;
+					}
+					else if (rc > 0) {
+						ha_warning("parsing [%s:%d] : %s\n", file, linenum, errmsg);
+						err_code |= ERR_WARN;
+					}
+					goto out;
+				}
+			}
+		}
+
+		best = cfg_find_best_match(args[0], &cfg_keywords.list, CFG_TRACES, NULL);
+		if (best)
+			ha_alert("parsing [%s:%d] : unknown keyword '%s' in '%s' section; did you mean '%s' maybe ?\n", file, linenum, args[0], cursection, best);
+		else
+			ha_alert("parsing [%s:%d] : unknown keyword '%s' in '%s' section\n", file, linenum, args[0], "global");
+		err_code |= ERR_ALERT | ERR_FATAL;
+	}
+
+  out:
+	free(errmsg);
+	return err_code;
 }
 
 /* parse the command, returns 1 if a message is returned, otherwise zero */
@@ -1108,7 +1199,7 @@ static struct cli_kw_list cli_kws = {{ },{
 INITCALL1(STG_REGISTER, cli_register_kw, &cli_kws);
 
 static struct cfg_kw_list cfg_kws = {ILH, {
-	{ CFG_GLOBAL, "trace", cfg_parse_trace, KWF_EXPERIMENTAL },
+	{ CFG_TRACES, "trace", cfg_parse_trace },
 	{ /* END */ },
 }};
 
