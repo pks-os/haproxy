@@ -9,13 +9,14 @@
 #include <haproxy/mux_quic.h>
 #include <haproxy/pool.h>
 #include <haproxy/quic_conn.h>
-#include <haproxy/quic_frame-t.h>
 #include <haproxy/task.h>
 
 DECLARE_STATIC_POOL(pool_head_quic_stream_desc, "qc_stream_desc",
                     sizeof(struct qc_stream_desc));
 DECLARE_STATIC_POOL(pool_head_quic_stream_buf, "qc_stream_buf",
                     sizeof(struct qc_stream_buf));
+DECLARE_STATIC_POOL(pool_head_quic_stream_ack, "qc_stream_ack",
+                    sizeof(struct qc_stream_ack));
 
 static struct pool_head *pool_head_sbuf;
 
@@ -23,18 +24,23 @@ static void qc_stream_buf_free(struct qc_stream_desc *stream,
                                struct qc_stream_buf **stream_buf)
 {
 	struct buffer *buf = &(*stream_buf)->buf;
-	uint64_t free_size;
+	uint64_t room;
 
 	/* Caller is responsible to remove buffered ACK frames before destroying a buffer instance. */
-	BUG_ON(!eb_is_empty(&(*stream_buf)->acked_frms));
+	BUG_ON(!eb_is_empty(&(*stream_buf)->ack_tree));
 
 	eb64_delete(&(*stream_buf)->offset_node);
 
-	/* Reset current buf ptr if deleted instance is the same one. */
-	if (*stream_buf == stream->buf)
+	if (*stream_buf == stream->buf) {
+		/* Reset current buffer ptr. */
 		stream->buf = NULL;
+		room = b_size(buf);
+	}
+	else {
+		/* For released buffer, acked data were already notified. */
+		room = b_data(buf);
+	}
 
-	free_size = b_size(buf);
 	if ((*stream_buf)->sbuf) {
 		pool_free(pool_head_sbuf, buf->area);
 	}
@@ -46,8 +52,8 @@ static void qc_stream_buf_free(struct qc_stream_desc *stream,
 	*stream_buf = NULL;
 
 	/* notify MUX about available buffers. */
-	if (stream->notify_room)
-		stream->notify_room(stream, free_size);
+	if (stream->notify_room && room)
+		stream->notify_room(stream, room);
 }
 
 /* Allocate a new stream descriptor with id <id>. The caller is responsible to
@@ -108,6 +114,7 @@ void qc_stream_desc_release(struct qc_stream_desc *stream,
 	stream->flags |= QC_SD_FL_RELEASE;
 	stream->ctx = new_ctx;
 
+	/* Release active buffer if still present on streamdesc release. */
 	if (stream->buf) {
 		struct qc_stream_buf *stream_buf = stream->buf;
 		struct buffer *buf = &stream_buf->buf;
@@ -121,10 +128,14 @@ void qc_stream_desc_release(struct qc_stream_desc *stream,
 		if (final_size < tail_offset)
 			b_sub(buf, tail_offset - final_size);
 
-		if (!b_data(buf))
+		if (!b_data(buf)) {
+			/* This will ensure notify_room is triggered. */
 			qc_stream_buf_free(stream, &stream_buf);
+		}
+		else if (stream->notify_room && b_room(buf)) {
+			stream->notify_room(stream, b_room(buf));
+		}
 
-		/* A released stream does not use <stream.buf>. */
 		stream->buf = NULL;
 	}
 
@@ -132,6 +143,104 @@ void qc_stream_desc_release(struct qc_stream_desc *stream,
 		/* if no buffer left we can free the stream. */
 		qc_stream_desc_free(stream, 0);
 	}
+}
+
+static int qc_stream_buf_is_released(const struct qc_stream_buf *buf,
+                                     const struct qc_stream_desc *stream)
+{
+	return buf != stream->buf;
+}
+
+/* Store an out-of-order stream ACK for <buf>. This corresponds to a frame
+ * starting at <offset> of length <len> with <fin> set if FIN is present.
+ *
+ * Returns the count of newly acknowledged data, or a negative error code if
+ * the new range cannot be stored due to a fatal error.
+ */
+static int qc_stream_buf_store_ack(struct qc_stream_buf *buf,
+                                   struct qc_stream_desc *stream,
+                                   uint64_t offset, uint64_t len, int fin)
+{
+	struct eb64_node *less, *more;
+	struct qc_stream_ack *ack, *ack_less = NULL, *ack_more = NULL;
+	int newly_acked = len;
+
+	more = eb64_lookup_ge(&buf->ack_tree, offset);
+	if (more)
+		ack_more = eb64_entry(more, struct qc_stream_ack, offset_node);
+
+	/* Ranges are always merged before insertion so there could be no
+	 * overlapping or just contiguous different ranges. No need to use
+	 * <ack_less> if an existing range already starts at requested offset.
+	 */
+	less = eb64_lookup_le(&buf->ack_tree, offset);
+	if (less && more != less)
+		ack_less = eb64_entry(less, struct qc_stream_ack, offset_node);
+
+	/* Ensure that offset:len range has not been already acknowledged, at least partially. */
+	if ((ack_more && offset == ack_more->offset_node.key && offset + len <= ack_more->offset_node.key) ||
+	    (ack_less && ack_less->offset_node.key + ack_less->len >= offset + len)) {
+		newly_acked = 0;
+		goto end;
+	}
+
+	/* If current range is contiguous or overlapping with one or several
+	 * superior ranges, extend current range and delete superior ranges.
+	 */
+	while (ack_more && offset + len >= ack_more->offset_node.key) {
+		struct eb64_node *next;
+
+		if (offset + len < ack_more->offset_node.key + ack_more->len) {
+			newly_acked -= (offset + len) - ack_more->offset_node.key;
+			/* Extend current range to cover the next entry. */
+			len += (ack_more->offset_node.key + ack_more->len) - (offset + len);
+			fin = ack_more->fin;
+		}
+		else {
+			newly_acked -= ack_more->len;
+		}
+
+		/* Remove the next range as it is covered by the current one. */
+		next = eb64_next(more);
+		eb64_delete(more);
+		pool_free(pool_head_quic_stream_ack, ack_more);
+
+		more = next;
+		ack_more = more ? eb64_entry(more, struct qc_stream_ack, offset_node) : NULL;
+	}
+
+	/* If there is a contiguous or overlapping smaller range, extend it
+	 * without adding a new entry.
+	 */
+	if (ack_less &&
+	    ack_less->offset_node.key + ack_less->len >= offset) {
+		newly_acked -= (ack_less->offset_node.key + ack_less->len) - offset;
+		/* Extend previous entry to fully cover the current range. */
+		ack_less->len += (offset + len) -
+		                 (ack_less->offset_node.key + ack_less->len);
+		ack_less->fin = fin;
+	}
+	else {
+		/* Store a new ACK stream range. */
+		ack = pool_alloc(pool_head_quic_stream_ack);
+		if (!ack) {
+			newly_acked = -1;
+			goto end;
+		}
+
+		ack->offset_node.key = offset;
+		ack->len = len;
+		ack->fin = fin;
+
+		eb64_insert(&buf->ack_tree, &ack->offset_node);
+	}
+
+	buf->room += newly_acked;
+	if (stream->notify_room && qc_stream_buf_is_released(buf, stream))
+		stream->notify_room(stream, newly_acked);
+
+ end:
+	return newly_acked;
 }
 
 /* Acknowledges data for buffer <buf> attached to <stream> instance. This covers
@@ -146,13 +255,27 @@ static struct qc_stream_buf *qc_stream_buf_ack(struct qc_stream_buf *buf,
                                                struct qc_stream_desc *stream,
                                                uint64_t offset, uint64_t len, int fin)
 {
+	uint64_t diff;
+
 	/* This function does not deal with out-of-order ACK. */
 	BUG_ON(offset > stream->ack_offset);
 
 	if (offset + len > stream->ack_offset) {
-		const uint64_t diff = offset + len - stream->ack_offset;
+		diff = offset + len - stream->ack_offset;
 		b_del(&buf->buf, diff);
 		stream->ack_offset += diff;
+
+		/* notify room from acked data if buffer has been released. */
+		if (stream->notify_room && qc_stream_buf_is_released(buf, stream)) {
+			if (diff >= buf->room) {
+				diff -= buf->room;
+				buf->room = 0;
+				stream->notify_room(stream, diff);
+			}
+			else {
+				buf->room -= diff;
+			}
+		}
 	}
 
 	if (fin) {
@@ -160,7 +283,7 @@ static struct qc_stream_buf *qc_stream_buf_ack(struct qc_stream_buf *buf,
 		stream->flags &= ~QC_SD_FL_WAIT_FOR_FIN;
 	}
 
-	if (!b_data(&buf->buf) && eb_is_empty(&buf->acked_frms)) {
+	if (!b_data(&buf->buf) && eb_is_empty(&buf->ack_tree)) {
 		qc_stream_buf_free(stream, &buf);
 		/* Retrieve next buffer instance. */
 		buf = !eb_is_empty(&stream->buf_tree) ?
@@ -178,33 +301,28 @@ static struct qc_stream_buf *qc_stream_buf_ack(struct qc_stream_buf *buf,
 static void qc_stream_buf_consume(struct qc_stream_buf *stream_buf,
                                   struct qc_stream_desc *stream)
 {
-	struct quic_conn *qc = stream->qc;
-	struct eb64_node *frm_node;
-	struct qf_stream *strm_frm;
-	struct quic_frame *frm;
-	uint64_t offset, len;
-	int fin;
+	struct qc_stream_ack *ack;
+	struct eb64_node *ack_node;
 
-	frm_node = eb64_first(&stream_buf->acked_frms);
-	while (frm_node) {
-		strm_frm = eb64_entry(frm_node, struct qf_stream, offset);
-		frm = container_of(strm_frm, struct quic_frame, stream);
-
-		offset = strm_frm->offset.key;
-		len = strm_frm->len;
-		fin = frm->type & QUIC_STREAM_FRAME_TYPE_FIN_BIT;
-
-		if (offset > stream->ack_offset)
+	ack_node = eb64_first(&stream_buf->ack_tree);
+	while (ack_node) {
+		ack = eb64_entry(ack_node, struct qc_stream_ack, offset_node);
+		if (ack->offset_node.key > stream->ack_offset)
 			break;
 
-		/* Delete frame before acknowledged it. This prevents BUG_ON()
-		 * on non-empty acked_frms tree when stream_buf is empty and removed.
-		 */
-		eb64_delete(frm_node);
-		stream_buf = qc_stream_buf_ack(stream_buf, stream, offset, len, fin);
-		qc_release_frm(qc, frm);
+		/* For released buf, room count is decremented on buffered ACK consumption. */
+		if (stream_buf == stream->buf)
+			stream_buf->room = MAX((int64_t)(stream_buf->room - ack->len), 0);
 
-		frm_node = stream_buf ? eb64_first(&stream_buf->acked_frms) : NULL;
+		/* Delete range before acknowledged it. This prevents BUG_ON()
+		 * on non-empty ack_tree tree when stream_buf is empty and removed.
+		 */
+		eb64_delete(ack_node);
+		stream_buf = qc_stream_buf_ack(stream_buf, stream,
+		                               ack->offset_node.key, ack->len, ack->fin);
+		pool_free(pool_head_quic_stream_ack, ack);
+
+		ack_node = stream_buf ? eb64_first(&stream_buf->ack_tree) : NULL;
 	}
 }
 
@@ -214,14 +332,11 @@ static void qc_stream_buf_consume(struct qc_stream_buf *stream_buf,
  * Returns 0 if the frame has been handled and can be removed.
  * Returns a positive value if acknowledgement is out-of-order and
  * corresponding STREAM frame has been buffered.
+ * Returns a negative value on fatal error.
  */
-int qc_stream_desc_ack(struct qc_stream_desc *stream, struct quic_frame *frm)
+int qc_stream_desc_ack(struct qc_stream_desc *stream,
+                       uint64_t offset, uint64_t len, int fin)
 {
-	struct qf_stream *strm_frm = &frm->stream;
-	const uint64_t offset = strm_frm->offset.key;
-	const uint64_t len = strm_frm->len;
-	const int fin = frm->type & QUIC_STREAM_FRAME_TYPE_FIN_BIT;
-
 	struct qc_stream_buf *stream_buf = NULL;
 	struct eb64_node *buf_node;
 	int ret = 0;
@@ -243,8 +358,7 @@ int qc_stream_desc_ack(struct qc_stream_desc *stream, struct quic_frame *frm)
 		buf_node = eb64_lookup_le(&stream->buf_tree, offset);
 		BUG_ON(!buf_node); /* Cannot acknowledged a STREAM frame for a non existing buffer. */
 		stream_buf = eb64_entry(buf_node, struct qc_stream_buf, offset_node);
-		eb64_insert(&stream_buf->acked_frms, &strm_frm->offset);
-		ret = 1;
+		ret = qc_stream_buf_store_ack(stream_buf, stream, offset, len, fin);
 	}
 	else if (offset + len > stream->ack_offset) {
 		/* Buf list cannot be empty if there is still unacked data. */
@@ -269,8 +383,7 @@ int qc_stream_desc_ack(struct qc_stream_desc *stream, struct quic_frame *frm)
 void qc_stream_desc_free(struct qc_stream_desc *stream, int closing)
 {
 	struct qc_stream_buf *buf;
-	struct quic_conn *qc = stream->qc;
-	struct eb64_node *frm_node, *buf_node;
+	struct eb64_node *ack_node, *buf_node;
 	unsigned int free_count = 0;
 
 	/* This function only deals with released streams. */
@@ -288,16 +401,14 @@ void qc_stream_desc_free(struct qc_stream_desc *stream, int closing)
 		BUG_ON(b_data(&buf->buf) && !closing);
 
 		/* qc_stream_desc might be freed before having received all its ACKs. */
-		while (!eb_is_empty(&buf->acked_frms)) {
-			struct qf_stream *strm_frm;
-			struct quic_frame *frm;
+		while (!eb_is_empty(&buf->ack_tree)) {
+			struct qc_stream_ack *ack;
 
-			frm_node = eb64_first(&buf->acked_frms);
-			eb64_delete(frm_node);
+			ack_node = eb64_first(&buf->ack_tree);
+			eb64_delete(ack_node);
 
-			strm_frm = eb64_entry(frm_node, struct qf_stream, offset);
-			frm = container_of(strm_frm, struct quic_frame, stream);
-			qc_release_frm(qc, frm);
+			ack = eb64_entry(ack_node, struct qc_stream_ack, offset_node);
+			pool_free(pool_head_quic_stream_ack, ack);
 		}
 
 		if (buf->sbuf)
@@ -344,7 +455,8 @@ struct buffer *qc_stream_buf_alloc(struct qc_stream_desc *stream,
 	if (!stream->buf)
 		return NULL;
 
-	stream->buf->acked_frms = EB_ROOT;
+	stream->buf->ack_tree = EB_ROOT_UNIQUE;
+	stream->buf->room = 0;
 	stream->buf->buf = BUF_NULL;
 	stream->buf->offset_node.key = offset;
 
@@ -407,11 +519,20 @@ struct buffer *qc_stream_buf_realloc(struct qc_stream_desc *stream)
  */
 void qc_stream_buf_release(struct qc_stream_desc *stream)
 {
+	uint64_t room;
+
 	/* current buffer already released */
 	BUG_ON(!stream->buf);
 
+	room = b_room(&stream->buf->buf) + stream->buf->room;
 	stream->buf = NULL;
 	stream->buf_offset = 0;
+
+	/* Released buffer won't receive any new data. Reports non consumed
+	 * space plus already stored out-of-order data range as available.
+	 */
+	if (stream->notify_room && room)
+		stream->notify_room(stream, room);
 }
 
 static int create_sbuf_pool(void)

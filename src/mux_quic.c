@@ -564,10 +564,10 @@ static void qmux_ctrl_send(struct qc_stream_desc *stream, uint64_t data, uint64_
 	BUG_ON(offset > qcs->tx.fc.off_real);
 
 	/* check if the STREAM frame has already been notified. It can happen
-	 * for retransmission.
+	 * for retransmission. Special care must be taken to ensure an empty
+	 * STREAM frame with FIN set is not considered as retransmitted
 	 */
-	if (offset + data < qcs->tx.fc.off_real ||
-	    (!data && (!(qcs->flags & QC_SF_FIN_STREAM) || qc_stream_buf_get(qcs->stream) || qcs_prep_bytes(qcs)))) {
+	if (offset + data < qcs->tx.fc.off_real || (!data && !(qcs->flags & QC_SF_FIN_STREAM))) {
 		TRACE_DEVEL("offset already notified", QMUX_EV_QCS_SEND, qcc->conn, qcs);
 		goto out;
 	}
@@ -1991,7 +1991,7 @@ static int qcs_build_stream_frm(struct qcs *qcs, struct buffer *out, char fin,
 
 	frm->stream.stream = qcs->stream;
 	frm->stream.id = qcs->id;
-	frm->stream.offset.key = 0;
+	frm->stream.offset = 0;
 	frm->stream.dup = 0;
 
 	if (total) {
@@ -2010,7 +2010,7 @@ static int qcs_build_stream_frm(struct qcs *qcs, struct buffer *out, char fin,
 
 	if (qcs->tx.fc.off_real) {
 		frm->type |= QUIC_STREAM_FRAME_TYPE_OFF_BIT;
-		frm->stream.offset.key = qcs->tx.fc.off_real;
+		frm->stream.offset = qcs->tx.fc.off_real;
 	}
 
 	/* Always set length bit as we do not know if there is remaining frames
@@ -2025,7 +2025,7 @@ static int qcs_build_stream_frm(struct qcs *qcs, struct buffer *out, char fin,
 	{
 		struct qcs_build_stream_trace_arg arg = {
 			.len = frm->stream.len, .fin = fin,
-			.offset = frm->stream.offset.key,
+			.offset = frm->stream.offset,
 		};
 		TRACE_LEAVE(QMUX_EV_QCS_SEND|QMUX_EV_QCS_BUILD_STRM,
 		            qcc->conn, qcs, &arg);
