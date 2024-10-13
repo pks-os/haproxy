@@ -41,13 +41,12 @@
  */
 #define H2_CF_DEM_DALLOC        0x00000004  // demux blocked on lack of connection's demux buffer
 #define H2_CF_DEM_DFULL         0x00000008  // demux blocked on connection's demux buffer full
-
-#define H2_CF_WAIT_INLIST       0x00000010  // there is at least one stream blocked by another stream in send_list/fctl_list
+#define H2_CF_DEM_RXBUF         0x00000010  // demux blocked on missing rxbuf slots
 #define H2_CF_DEM_MROOM         0x00000020  // demux blocked on lack of room in mux buffer
 #define H2_CF_DEM_SALLOC        0x00000040  // demux blocked on lack of stream's request buffer
 #define H2_CF_DEM_SFULL         0x00000080  // demux blocked on stream request buffer full
 #define H2_CF_DEM_TOOMANY       0x00000100  // demux blocked waiting for some stream connectors to leave
-#define H2_CF_DEM_BLOCK_ANY     0x000001E0  // aggregate of the demux flags above except DALLOC/DFULL
+#define H2_CF_DEM_BLOCK_ANY     0x000001F0  // aggregate of the demux flags above except DALLOC/DFULL
                                             // (SHORT_READ is also excluded)
 
 #define H2_CF_DEM_SHORT_READ    0x00000200  // demux blocked on incomplete frame
@@ -69,6 +68,7 @@
 
 #define H2_CF_ERR_PENDING       0x00800000  // A write error was detected (block sends but not reads)
 #define H2_CF_ERROR             0x01000000  //A read error was detected (handled has an abort)
+#define H2_CF_WAIT_INLIST       0x02000000  // there is at least one stream blocked by another stream in send_list/fctl_list
 
 /* This function is used to report flags in debugging tools. Please reflect
  * below any single-bit flag addition above in the same order via the
@@ -130,6 +130,8 @@ static forceinline char *h2c_show_flags(char *buf, size_t len, const char *delim
 
 #define H2_SF_TUNNEL_ABRT       0x00100000  // A tunnel attempt was aborted
 #define H2_SF_MORE_HTX_DATA     0x00200000  // more data expected from HTX
+#define H2_SF_EXPECT_RXDATA     0x00400000  // more data expected from the peer
+
 
 /* This function is used to report flags in debugging tools. Please reflect
  * below any single-bit flag addition above in the same order via the
