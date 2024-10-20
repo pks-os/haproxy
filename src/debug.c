@@ -157,10 +157,6 @@ struct post_mortem {
 	struct post_mortem_component *components; // NULL or array
 } post_mortem ALIGNED(256) = { };
 
-/* Points to a copy of the buffer where the dump functions should write, when
- * non-null. It's only used by debuggers for core dump analysis.
- */
-struct buffer *thread_dump_buffer = NULL;
 unsigned int debug_commands_issued = 0;
 
 /* dumps a backtrace of the current thread that is appended to buffer <buf>.
@@ -268,8 +264,9 @@ void ha_backtrace_to_stderr(void)
  * indicate the requesting one. Any stuck thread is also prefixed with a '>'.
  * The caller is responsible for atomically setting up the thread's dump buffer
  * to point to a valid buffer with enough room. Output will be truncated if it
- * does not fit. When the dump is complete, the dump buffer will be switched to
- * (void*)0x1 that the caller must turn to 0x0 once the contents are collected.
+ * does not fit. When the dump is complete, the dump buffer will have bit 0 set
+ * to 1 to tell the caller it's done, and the caller will then change that value
+ * to indicate it's done once the contents are collected.
  */
 void ha_thread_dump_one(int thr, int from_signal)
 {
@@ -351,16 +348,19 @@ void ha_thread_dump_one(int thr, int from_signal)
 	}
  leave:
 	/* end of dump, setting the buffer to 0x1 will tell the caller we're done */
-	HA_ATOMIC_STORE(&ha_thread_ctx[thr].thread_dump_buffer, (void*)0x1UL);
+	HA_ATOMIC_OR((ulong*)&ha_thread_ctx[thr].thread_dump_buffer, 0x1UL);
 }
 
 /* Triggers a thread dump from thread <thr>, either directly if it's the
  * current thread or if thread dump signals are not implemented, or by sending
  * a signal if it's a remote one and the feature is supported. The buffer <buf>
  * will get the dump appended, and the caller is responsible for making sure
- * there is enough room otherwise some contents will be truncated.
+ * there is enough room otherwise some contents will be truncated. The function
+ * waits for the called thread to fill the buffer before returning (or cancelling
+ * by reporting NULL). It does not release the called thread yet. It returns a
+ * pointer to the buffer used if the dump was done, otherwise NULL.
  */
-void ha_thread_dump(struct buffer *buf, int thr)
+struct buffer *ha_thread_dump_fill(struct buffer *buf, int thr)
 {
 	struct buffer *old = NULL;
 
@@ -383,12 +383,37 @@ void ha_thread_dump(struct buffer *buf, int thr)
 #endif
 		ha_thread_dump_one(thr, thr != tid);
 
-	/* now wait for the dump to be done, and release it */
+	/* now wait for the dump to be done (or cancelled) */
+	while (1) {
+		old = HA_ATOMIC_LOAD(&ha_thread_ctx[thr].thread_dump_buffer);
+		if ((ulong)old & 0x1)
+			break;
+		if (!old)
+			return old;
+		ha_thread_relax();
+	}
+	return (struct buffer *)((ulong)old & ~0x1UL);
+}
+
+/* Indicates to the called thread that the dumped data are collected by writing
+ * <buf> into the designated thread's dump buffer (usually buf is NULL). It
+ * waits for the dump to be completed if it was not the case, and can also
+ * leave if the pointer is NULL (e.g. if a thread has aborted).
+ */
+void ha_thread_dump_done(struct buffer *buf, int thr)
+{
+	struct buffer *old;
+
+	/* now wait for the dump to be done or cancelled, and release it */
 	do {
-		if (old)
+		old = HA_ATOMIC_LOAD(&ha_thread_ctx[thr].thread_dump_buffer);
+		if (!((ulong)old & 0x1)) {
+			if (!old)
+				return;
 			ha_thread_relax();
-		old = (void*)0x01;
-	} while (!HA_ATOMIC_CAS(&ha_thread_ctx[thr].thread_dump_buffer, &old, 0));
+			continue;
+		}
+	} while (!HA_ATOMIC_CAS(&ha_thread_ctx[thr].thread_dump_buffer, &old, buf));
 }
 
 /* dumps into the buffer some information related to task <task> (which may
@@ -485,11 +510,12 @@ static int cli_io_handler_show_threads(struct appctx *appctx)
 
 	do {
 		chunk_reset(&trash);
-		ha_thread_dump(&trash, *thr);
-
-		if (applet_putchk(appctx, &trash) == -1) {
-			/* failed, try again */
-			return 0;
+		if (ha_thread_dump_fill(&trash, *thr)) {
+			ha_thread_dump_done(NULL, *thr);
+			if (applet_putchk(appctx, &trash) == -1) {
+				/* failed, try again */
+				return 0;
+			}
 		}
 		(*thr)++;
 	} while (*thr < global.nbthread);
@@ -631,21 +657,13 @@ static int debug_parse_cli_show_dev(char **args, char *payload, struct appctx *a
 	return cli_msg(appctx, LOG_INFO, trash.area);
 }
 
-/* Dumps a state of all threads into the trash and on fd #2, then aborts.
- * A copy will be put into a trash chunk that's assigned to thread_dump_buffer
- * so that the debugger can easily find it. This buffer might be truncated if
- * too many threads are being dumped, but at least we'll dump them all on stderr.
- * If thread_dump_buffer is set, it means that a panic has already begun.
- */
+/* Dumps a state of all threads into the trash and on fd #2, then aborts. */
 void ha_panic()
 {
-	struct buffer *old;
+	struct buffer *buf;
 	unsigned int thr;
 
-	mark_tainted(TAINTED_PANIC);
-
-	old = NULL;
-	if (!HA_ATOMIC_CAS(&thread_dump_buffer, &old, get_trash_chunk())) {
+	if (mark_tainted(TAINTED_PANIC) & TAINTED_PANIC) {
 		/* a panic dump is already in progress, let's not disturb it,
 		 * we'll be called via signal DEBUGSIG. By returning we may be
 		 * able to leave a current signal handler (e.g. WDT) so that
@@ -654,14 +672,22 @@ void ha_panic()
 		return;
 	}
 
-	chunk_reset(&trash);
-	chunk_appendf(&trash, "Thread %u is about to kill the process.\n", tid + 1);
+	chunk_printf(&trash, "Thread %u is about to kill the process.\n", tid + 1);
+	DISGUISE(write(2, trash.area, trash.data));
 
 	for (thr = 0; thr < global.nbthread; thr++) {
-		ha_thread_dump(&trash, thr);
-		DISGUISE(write(2, trash.area, trash.data));
-		b_force_xfer(thread_dump_buffer, &trash, b_room(thread_dump_buffer));
-		chunk_reset(&trash);
+		if (thr == tid)
+			buf = get_trash_chunk();
+		else
+			buf = (void *)0x2UL; // let the target thread allocate it
+
+		buf = ha_thread_dump_fill(buf, thr);
+		if (!buf)
+			continue;
+
+		DISGUISE(write(2, buf->area, buf->data));
+		/* restore the thread's dump pointer for easier post-mortem analysis */
+		ha_thread_dump_done(buf, thr);
 	}
 
 #ifdef USE_LUA
@@ -2081,18 +2107,32 @@ static void debug_release_memstats(struct appctx *appctx)
 
 /* handles DEBUGSIG to dump the state of the thread it's working on. This is
  * appended at the end of thread_dump_buffer which must be protected against
- * reentrance from different threads (a thread-local buffer works fine).
+ * reentrance from different threads (a thread-local buffer works fine). If
+ * the buffer pointer is equal to 0x2, then it's a panic. The thread allocates
+ * the buffer from its own trash chunks so that the contents remain visible in
+ * the core, and it never returns.
  */
 void debug_handler(int sig, siginfo_t *si, void *arg)
 {
 	struct buffer *buf = HA_ATOMIC_LOAD(&th_ctx->thread_dump_buffer);
 	int harmless = is_thread_harmless();
+	int no_return = 0;
 
 	/* first, let's check it's really for us and that we didn't just get
 	 * a spurious DEBUGSIG.
 	 */
-	if (!buf || buf == (void*)(0x1UL))
+	if (!buf || (ulong)buf & 0x1UL)
 		return;
+
+	/* Special value 0x2 is used during panics and requires that the thread
+	 * allocates its own dump buffer among its own trash buffers. The goal
+	 * is that all threads keep a copy of their own dump.
+	 */
+	if ((ulong)buf == 0x2UL) {
+		no_return = 1;
+		buf = get_trash_chunk();
+		HA_ATOMIC_STORE(&th_ctx->thread_dump_buffer, buf);
+	}
 
 	/* now dump the current state into the designated buffer, and indicate
 	 * we come from a sig handler.
@@ -2105,6 +2145,12 @@ void debug_handler(int sig, siginfo_t *si, void *arg)
 	if (!harmless &&
 	    !(_HA_ATOMIC_LOAD(&th_ctx->flags) & TH_FL_SLEEPING))
 		_HA_ATOMIC_OR(&th_ctx->flags, TH_FL_STUCK);
+
+	/* in case of panic, no return is planned so that we don't destroy
+	 * the buffer's contents and we make sure not to trigger in loops.
+	 */
+	while (no_return)
+		wait(NULL);
 }
 
 static int init_debug_per_thread()
