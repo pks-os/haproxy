@@ -563,14 +563,18 @@ static void qmux_ctrl_send(struct qc_stream_desc *stream, uint64_t data, uint64_
 	/* Real off MUST always be the greatest offset sent. */
 	BUG_ON(offset > qcs->tx.fc.off_real);
 
-	/* check if the STREAM frame has already been notified. It can happen
-	 * for retransmission. Special care must be taken to ensure an empty
-	 * STREAM frame with FIN set is not considered as retransmitted
+	/* Check if the STREAM frame has already been notified. An empty FIN
+	 * frame must not be considered retransmitted.
 	 */
-	if (offset + data < qcs->tx.fc.off_real || (!data && !(qcs->flags & QC_SF_FIN_STREAM))) {
+	if (data && offset + data <= qcs->tx.fc.off_real) {
 		TRACE_DEVEL("offset already notified", QMUX_EV_QCS_SEND, qcc->conn, qcs);
 		goto out;
 	}
+
+	/* An empty STREAM frame is only used to notify FIN. A retransmitted
+	 * empty FIN cannot be notified as QCS will be unsubscribed first.
+	 */
+	BUG_ON(!data && !(qcs->flags & QC_SF_FIN_STREAM));
 
 	qcs_idle_open(qcs);
 
@@ -622,6 +626,9 @@ static void qmux_ctrl_send(struct qc_stream_desc *stream, uint64_t data, uint64_
 				/* Reset flag to not emit multiple FIN STREAM frames. */
 				qcs->flags &= ~QC_SF_FIN_STREAM;
 			}
+
+			/* Unsubscribe from streamdesc when everything sent. */
+			qc_stream_desc_sub_send(qcs->stream, NULL);
 		}
 	}
 
@@ -3352,8 +3359,12 @@ static void qmux_strm_shut(struct stconn *sc, unsigned int mode, struct se_abort
 	if (!qcs_is_close_local(qcs) &&
 	    !(qcs->flags & (QC_SF_FIN_STREAM|QC_SF_TO_RESET))) {
 
-		if (qcs->flags & QC_SF_UNKNOWN_PL_LENGTH) {
-			/* Close stream with a FIN STREAM frame. */
+		/* Close stream with FIN if length unknown and some data are
+		 * ready to be/already transmitted.
+		 * TODO select closure method on app proto layer
+		 */
+		if (qcs->flags & QC_SF_UNKNOWN_PL_LENGTH &&
+		    qcs->tx.fc.off_soft) {
 			if (!(qcc->flags & (QC_CF_ERR_CONN|QC_CF_ERRL))) {
 				TRACE_STATE("set FIN STREAM",
 				            QMUX_EV_STRM_SHUT, qcc->conn, qcs);
@@ -3478,7 +3489,7 @@ static const struct mux_ops qmux_ops = {
 	.subscribe   = qmux_strm_subscribe,
 	.unsubscribe = qmux_strm_unsubscribe,
 	.wake        = qmux_wake,
-	.shut       = qmux_strm_shut,
+	.shut        = qmux_strm_shut,
 	.ctl         = qmux_ctl,
 	.sctl        = qmux_sctl,
 	.show_sd     = qmux_strm_show_sd,
