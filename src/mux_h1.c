@@ -346,6 +346,8 @@ static void h1_shutw_conn(struct connection *conn);
 static void h1_wake_stream_for_recv(struct h1s *h1s);
 static void h1_wake_stream_for_send(struct h1s *h1s);
 static void h1s_destroy(struct h1s *h1s);
+static int h1_dump_h1c_info(struct buffer *msg, struct h1c *h1c, const char *pfx);
+static int h1_dump_h1s_info(struct buffer *msg, const struct h1s *h1s, const char *pfx);
 
 /* returns the stconn associated to the H1 stream */
 static forceinline struct stconn *h1s_sc(const struct h1s *h1s)
@@ -2285,6 +2287,7 @@ static size_t h1_process_demux(struct h1c *h1c, struct buffer *buf, size_t count
 				if (h1m->state <= H1_MSG_LAST_LF && b_data(&h1c->ibuf))
 					htx->flags |= HTX_FL_PARSING_ERROR;
 				se_fl_set(h1s->sd, SE_FL_ERROR);
+				COUNT_IF(1, "H1C EOS before the end of the message");
 				TRACE_ERROR("message aborted, set error on SC", H1_EV_RX_DATA|H1_EV_H1S_ERR, h1c->conn, h1s);
 			}
 
@@ -2297,6 +2300,7 @@ static size_t h1_process_demux(struct h1c *h1c, struct buffer *buf, size_t count
 		if (h1c->flags & H1C_F_ERROR) {
 			/* Report a terminal error to the SE if a previous read error was detected */
 			se_fl_set(h1s->sd, SE_FL_ERROR);
+			COUNT_IF(h1m->state < H1_MSG_DONE, "H1C ERROR before the end of the message");
 			TRACE_STATE("report ERROR to SE", H1_EV_RX_DATA|H1_EV_H1S_ERR, h1c->conn, h1s);
 		}
 	}
@@ -2913,6 +2917,7 @@ static size_t h1_make_data(struct h1s *h1s, struct h1m *h1m, struct buffer *buf,
 
 		if (h1m->flags & H1_MF_CLEN) {
 			if (count > h1m->curr_len) {
+				COUNT_IF(1, "more payload than announced (0-copy)");
 				TRACE_ERROR("more payload than announced",
 					    H1_EV_TX_DATA|H1_EV_STRM_ERR|H1_EV_H1C_ERR|H1_EV_H1S_ERR, h1c->conn, h1s);
 				goto error;
@@ -2936,6 +2941,7 @@ static size_t h1_make_data(struct h1s *h1s, struct h1m *h1m, struct buffer *buf,
 			/* If is a new chunk, prepend the chunk size */
 			if (h1m->state == H1_MSG_CHUNK_CRLF || h1m->state == H1_MSG_CHUNK_SIZE) {
 				if (h1m->curr_len) {
+					COUNT_IF(1, "chunk bigger than announced (0-copy)");
 					TRACE_ERROR("chunk bigger than announced",
 						    H1_EV_TX_DATA|H1_EV_STRM_ERR|H1_EV_H1C_ERR|H1_EV_H1S_ERR, h1c->conn, h1s);
 					goto error;
@@ -2963,6 +2969,7 @@ static size_t h1_make_data(struct h1s *h1s, struct h1m *h1m, struct buffer *buf,
 			/* It is the end of the message, add the last chunk with the extra CRLF */
 			if (eom) {
 				if (h1m->curr_len) {
+					COUNT_IF(1, "chunk smaller than announced (0-copy)");
 					TRACE_ERROR("chunk smaller than announced",
 						    H1_EV_TX_DATA|H1_EV_STRM_ERR|H1_EV_H1C_ERR|H1_EV_H1S_ERR, h1c->conn, h1s);
 					goto error;
@@ -2987,6 +2994,7 @@ static size_t h1_make_data(struct h1s *h1s, struct h1m *h1m, struct buffer *buf,
 	/* Handle now case of CRLF at the end of a chun. */
 	if ((h1m->flags & H1_MF_CHNK) && h1m->state == H1_MSG_CHUNK_CRLF) {
 		if (h1m->curr_len) {
+			COUNT_IF(1, "chunk bigger than announced");
 			TRACE_ERROR("chunk bigger than announced",
 				    H1_EV_TX_DATA|H1_EV_STRM_ERR|H1_EV_H1C_ERR|H1_EV_H1S_ERR, h1c->conn, h1s);
 			goto error;
@@ -3060,6 +3068,7 @@ static size_t h1_make_data(struct h1s *h1s, struct h1m *h1m, struct buffer *buf,
 
 			if (h1m->flags & H1_MF_CLEN) {
 				if (vlen > h1m->curr_len) {
+					COUNT_IF(1, "more payload than announced");
 					TRACE_ERROR("more payload than announced",
 						    H1_EV_TX_DATA|H1_EV_STRM_ERR|H1_EV_H1C_ERR|H1_EV_H1S_ERR, h1c->conn, h1s);
 					goto error;
@@ -3076,6 +3085,7 @@ static size_t h1_make_data(struct h1s *h1s, struct h1m *h1m, struct buffer *buf,
 				}
 				if (last_data) {
 					if (h1m->curr_len) {
+						COUNT_IF(1, "chunk smaller than announced");
 						TRACE_ERROR("chunk smaller than announced",
 							    H1_EV_TX_DATA|H1_EV_STRM_ERR|H1_EV_H1C_ERR|H1_EV_H1S_ERR, h1c->conn, h1s);
 						goto error;
@@ -3472,6 +3482,7 @@ static size_t h1_process_mux(struct h1c *h1c, struct buffer *buf, size_t count)
 				htx->flags |= HTX_FL_PROCESSING_ERROR;
 				h1s->flags |= H1S_F_PROCESSING_ERROR;
 				se_fl_set(h1s->sd, SE_FL_ERROR);
+				COUNT_IF(1, "processing error during message formatting");
 				TRACE_ERROR("processing error", H1_EV_TX_DATA|H1_EV_STRM_ERR|H1_EV_H1C_ERR|H1_EV_H1S_ERR, h1c->conn, h1s);
 				break;
 		}
@@ -4411,6 +4422,7 @@ static void h1_detach(struct sedesc *sd)
 
 	if (h1c->state == H1_CS_RUNNING && !(h1c->flags & H1C_F_IS_BACK) && h1s->req.state != H1_MSG_DONE) {
 		h1c->state = H1_CS_DRAINING;
+		COUNT_IF(1, "Deferring H1S destroy to drain message");
 		TRACE_DEVEL("Deferring H1S destroy to drain message", H1_EV_STRM_END, h1s->h1c->conn, h1s);
 		/* If we have a pending data, process it immediately or
 		 * subscribe for reads waiting for new data
@@ -4446,6 +4458,9 @@ static void h1_shut(struct stconn *sc, unsigned int mode, struct se_abort_info *
 		goto end;
 
   do_shutw:
+	COUNT_IF((h1c->flags & H1C_F_IS_BACK) && (h1s->res.state < H1_MSG_DONE), "Abort sending of the response");
+	COUNT_IF(!(h1c->flags & H1C_F_IS_BACK) && (h1s->req.state < H1_MSG_DONE), "Abort sending of the request");
+
 	h1_close(h1c);
 	if (!(mode & SE_SHW_NORMAL))
 		h1c->flags |= H1C_F_SILENT_SHUT;
@@ -5009,6 +5024,7 @@ static int h1_fastfwd(struct stconn *sc, unsigned int count, unsigned int flags)
 		if (total > h1m->curr_len) {
 			h1s->flags |= H1S_F_PARSING_ERROR;
 			se_fl_set(h1s->sd, SE_FL_ERROR);
+			COUNT_IF(1, "more payload than announced");
 			TRACE_ERROR("too much payload, more than announced",
 				    H1_EV_STRM_RECV|H1_EV_STRM_ERR|H1_EV_H1C_ERR|H1_EV_H1S_ERR, h1c->conn, h1s);
 			goto end;
@@ -5046,6 +5062,7 @@ static int h1_fastfwd(struct stconn *sc, unsigned int count, unsigned int flags)
 		else {
 			se_fl_set(h1s->sd, SE_FL_ERROR);
 			h1c->flags = (h1c->flags & ~H1C_F_WANT_FASTFWD) | H1C_F_ERROR;
+			COUNT_IF(1, "H1C EOS before the end of the message");
 			TRACE_ERROR("message aborted, set error on SC", H1_EV_STRM_RECV|H1_EV_H1S_ERR, h1c->conn, h1s);
 		}
 		h1c->flags = (h1c->flags & ~H1C_F_WANT_FASTFWD) | H1C_F_EOS;
@@ -5054,6 +5071,7 @@ static int h1_fastfwd(struct stconn *sc, unsigned int count, unsigned int flags)
 	if (h1c->conn->flags & CO_FL_ERROR) {
 		se_fl_set(h1s->sd, SE_FL_ERROR);
 		h1c->flags = (h1c->flags & ~H1C_F_WANT_FASTFWD) | H1C_F_ERROR;
+		COUNT_IF(h1m->state < H1_MSG_DONE, "H1C ERROR before the end of the message");
 		TRACE_DEVEL("connection error", H1_EV_STRM_ERR|H1_EV_H1C_ERR|H1_EV_H1S_ERR, h1c->conn, h1s);
 	}
 
@@ -5182,13 +5200,30 @@ static int h1_sctl(struct stconn *sc, enum mux_sctl_type mux_sctl, void *output)
 {
 	int ret = 0;
 	struct h1s *h1s = __sc_mux_strm(sc);
+	union mux_sctl_dbg_str_ctx *dbg_ctx;
+	struct buffer *buf;
 
 	switch (mux_sctl) {
 	case MUX_SCTL_SID:
 		if (output)
 			*((int64_t *)output) = h1s->h1c->req_count;
 		return ret;
+	case MUX_SCTL_DBG_STR:
+		dbg_ctx = output;
+		buf = get_trash_chunk();
 
+		if (dbg_ctx->arg.debug_flags & MUX_SCTL_DBG_STR_L_MUXS)
+			h1_dump_h1s_info(buf, h1s, NULL);
+
+		if (dbg_ctx->arg.debug_flags & MUX_SCTL_DBG_STR_L_MUXC)
+			h1_dump_h1c_info(buf, h1s->h1c, NULL);
+
+		if (dbg_ctx->arg.debug_flags & MUX_SCTL_DBG_STR_L_CONN)
+			chunk_appendf(buf, " conn.flg=%#08x", h1s->h1c->conn->flags);
+
+		/* other layers not implemented */
+		dbg_ctx->ret.buf = *buf;
+		return ret;
 	default:
 		return -1;
 	}

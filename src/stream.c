@@ -421,6 +421,7 @@ struct stream *stream_new(struct session *sess, struct stconn *sc, struct buffer
 
 	s->lat_time = s->cpu_time = 0;
 	s->call_rate.curr_tick = s->call_rate.curr_ctr = s->call_rate.prev_ctr = 0;
+	s->passes_stconn = s->passes_reqana = s->passes_resana = s->passes_propag = 0;
 	s->pcli_next_pid = 0;
 	s->pcli_flags = 0;
 	s->unique_id = IST_NULL;
@@ -1840,13 +1841,14 @@ struct task *process_stream(struct task *t, void *context, unsigned int state)
 	 * the client cannot have connect (hence retryable) errors. Also, the
 	 * connection setup code must be able to deal with any type of abort.
 	 */
+	s->passes_stconn++;
 	srv = objt_server(s->target);
 	if (unlikely(scf->flags & SC_FL_ERROR)) {
 		if (sc_state_in(scf->state, SC_SB_EST|SC_SB_DIS)) {
 			sc_abort(scf);
 			sc_shutdown(scf);
-			//sc_report_error(scf); TODO: Be sure it is useless
 			if (!(req->analysers) && !(res->analysers)) {
+				COUNT_IF(1, "Report a client abort (no analysers)");
 				_HA_ATOMIC_INC(&s->be->be_counters.cli_aborts);
 				_HA_ATOMIC_INC(&sess->fe->fe_counters.cli_aborts);
 				if (sess->listener && sess->listener->counters)
@@ -1865,11 +1867,11 @@ struct task *process_stream(struct task *t, void *context, unsigned int state)
 		if (sc_state_in(scb->state, SC_SB_EST|SC_SB_DIS)) {
 			sc_abort(scb);
 			sc_shutdown(scb);
-			//sc_report_error(scb); TODO: Be sure it is useless
 			_HA_ATOMIC_INC(&s->be->be_counters.failed_resp);
 			if (srv)
 				_HA_ATOMIC_INC(&srv->counters.failed_resp);
 			if (!(req->analysers) && !(res->analysers)) {
+				COUNT_IF(1, "Report a client abort (no analysers)");
 				_HA_ATOMIC_INC(&s->be->be_counters.srv_aborts);
 				_HA_ATOMIC_INC(&sess->fe->fe_counters.srv_aborts);
 				if (sess->listener && sess->listener->counters)
@@ -1969,6 +1971,7 @@ struct task *process_stream(struct task *t, void *context, unsigned int state)
 	 */
 
  resync_request:
+	s->passes_reqana++;
 	/* Analyse request */
 	if (((req->flags & ~rqf_last) & CF_MASK_ANALYSER) ||
 	    ((scf->flags ^ scf_flags) & (SC_FL_EOS|SC_FL_ABRT_DONE|SC_FL_ABRT_WANTED)) ||
@@ -2073,6 +2076,7 @@ struct task *process_stream(struct task *t, void *context, unsigned int state)
 	req_ana_back = req->analysers;
 
  resync_response:
+	s->passes_resana++;
 	/* Analyse response */
 
 	if (((res->flags & ~rpf_last) & CF_MASK_ANALYSER) ||
@@ -2155,7 +2159,7 @@ struct task *process_stream(struct task *t, void *context, unsigned int state)
 	 * both buffers.
 	 */
 
-
+	s->passes_propag++;
 	/*
 	 * Now we propagate unhandled errors to the stream. Normally
 	 * we're just in a data phase here since it means we have not
@@ -2175,6 +2179,7 @@ struct task *process_stream(struct task *t, void *context, unsigned int state)
 				if (srv)
 					_HA_ATOMIC_INC(&srv->counters.cli_aborts);
 				s->flags |= SF_ERR_CLICL;
+				COUNT_IF(1, "Report unhandled client error");
 			}
 			else if (req->flags & CF_READ_TIMEOUT) {
 				_HA_ATOMIC_INC(&s->be->be_counters.cli_aborts);
@@ -2184,6 +2189,7 @@ struct task *process_stream(struct task *t, void *context, unsigned int state)
 				if (srv)
 					_HA_ATOMIC_INC(&srv->counters.cli_aborts);
 				s->flags |= SF_ERR_CLITO;
+				COUNT_IF(1, "Report unhandled client timeout (RD)");
 			}
 			else {
 				_HA_ATOMIC_INC(&s->be->be_counters.srv_aborts);
@@ -2193,6 +2199,7 @@ struct task *process_stream(struct task *t, void *context, unsigned int state)
 				if (srv)
 					_HA_ATOMIC_INC(&srv->counters.srv_aborts);
 				s->flags |= SF_ERR_SRVTO;
+				COUNT_IF(1, "Report unhandled server timeout (WR)");
 			}
 			sess_set_term_flags(s);
 
@@ -2221,6 +2228,7 @@ struct task *process_stream(struct task *t, void *context, unsigned int state)
 				if (srv)
 					_HA_ATOMIC_INC(&srv->counters.srv_aborts);
 				s->flags |= SF_ERR_SRVCL;
+				COUNT_IF(1, "Report unhandled server error");
 			}
 			else if (res->flags & CF_READ_TIMEOUT) {
 				_HA_ATOMIC_INC(&s->be->be_counters.srv_aborts);
@@ -2230,6 +2238,7 @@ struct task *process_stream(struct task *t, void *context, unsigned int state)
 				if (srv)
 					_HA_ATOMIC_INC(&srv->counters.srv_aborts);
 				s->flags |= SF_ERR_SRVTO;
+				COUNT_IF(1, "Report unhandled server timeout (RD)");
 			}
 			else {
 				_HA_ATOMIC_INC(&s->be->be_counters.cli_aborts);
@@ -2239,6 +2248,7 @@ struct task *process_stream(struct task *t, void *context, unsigned int state)
 				if (srv)
 					_HA_ATOMIC_INC(&srv->counters.cli_aborts);
 				s->flags |= SF_ERR_CLITO;
+				COUNT_IF(1, "Report unhandled client timeout (WR)");
 			}
 			sess_set_term_flags(s);
 		}
@@ -2316,6 +2326,7 @@ struct task *process_stream(struct task *t, void *context, unsigned int state)
 				if (s->be->options & PR_O_ABRT_CLOSE) {
 					struct connection *conn = sc_conn(scf);
 
+					se_have_more_data(scf->sedesc);
 					if (conn && conn->mux && conn->mux->ctl)
 						conn->mux->ctl(conn, MUX_CTL_SUBS_RECV, NULL);
 				}
@@ -3301,6 +3312,9 @@ void strm_dump_to_buffer(struct buffer *buf, const struct stream *strm, const ch
 		     strm->conn_err_type, strm->srv_conn, strm->pend_pos,
 		     LIST_INLIST(&strm->buffer_wait.list), strm->stream_epoch);
 
+	chunk_appendf(buf, "%s  p_stc=%u p_req=%u p_res=%u p_prp=%u\n", pfx,
+		      strm->passes_stconn, strm->passes_reqana, strm->passes_resana, strm->passes_propag);
+
 	chunk_appendf(buf,
 		     "%s  frontend=%s (id=%u mode=%s), listener=%s (id=%u)", pfx,
 		     HA_ANON_STR(anon_key, strm_fe(strm)->id), strm_fe(strm)->uuid, proxy_mode_str(strm_fe(strm)->mode),
@@ -3523,7 +3537,7 @@ void strm_dump_to_buffer(struct buffer *buf, const struct stream *strm, const ch
 		list_for_each_entry(flt, &strm->strm_flt.filters, list) {
 			if (flt->list.p != &strm->strm_flt.filters)
 				chunk_appendf(buf, ", ");
-			chunk_appendf(buf, "%p=\"%s\"", flt, FLT_ID(flt));
+			chunk_appendf(buf, "%p=\"%s\" [%u]", flt, FLT_ID(flt), flt->calls);
 		}
 		chunk_appendf(buf, "}\n");
 	}
