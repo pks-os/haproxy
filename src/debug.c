@@ -45,6 +45,7 @@
 #include <haproxy/log.h>
 #include <haproxy/net_helper.h>
 #include <haproxy/sc_strm.h>
+#include <haproxy/proxy.h>
 #include <haproxy/stconn.h>
 #include <haproxy/task.h>
 #include <haproxy/thread.h>
@@ -98,6 +99,7 @@ struct post_mortem_component {
  */
 struct post_mortem {
 	/* platform-specific information */
+	char post_mortem_magic[32];     // "POST-MORTEM STARTS HERE+7654321\0"
 	struct {
 		struct utsname utsname; // OS name+ver+arch+hostname
 		char hw_vendor[64];     // hardware/hypervisor vendor when known
@@ -148,6 +150,12 @@ struct post_mortem {
 	/* information about dynamic shared libraries involved */
 	char *libs;                      // dump of one addr / path per line, or NULL
 #endif
+	struct tgroup_info *tgroup_info; // pointer to ha_tgroup_info
+	struct thread_info *thread_info; // pointer to ha_thread_info
+	struct tgroup_ctx  *tgroup_ctx;  // pointer to ha_tgroup_ctx
+	struct thread_ctx  *thread_ctx;  // pointer to ha_thread_ctx
+	struct list *pools;              // pointer to the head of the pools list
+	struct proxy **proxies;          // pointer to the head of the proxies list
 
 	/* info about identified distinct components (executable, shared libs, etc).
 	 * These can be all listed at once in gdb using:
@@ -155,7 +163,7 @@ struct post_mortem {
 	 */
 	uint nb_components;              // # of components below
 	struct post_mortem_component *components; // NULL or array
-} post_mortem ALIGNED(256) = { };
+} post_mortem ALIGNED(256) HA_SECTION("_post_mortem") = { };
 
 unsigned int debug_commands_issued = 0;
 
@@ -314,7 +322,8 @@ void ha_thread_dump_one(int thr, int from_signal)
 	chunk_appendf(buf, "             curr_task=");
 	ha_task_dump(buf, th_ctx->current, "             ");
 
-	if (stuck && thr == tid) {
+	if (thr == tid && !(HA_ATOMIC_LOAD(&tg_ctx->threads_idle) & ti->ltid_bit)) {
+		/* only dump the stack of active threads */
 #ifdef USE_LUA
 		if (th_ctx->current &&
 		    th_ctx->current->process == process_stream && th_ctx->current->context) {
@@ -338,17 +347,11 @@ void ha_thread_dump_one(int thr, int from_signal)
 		if (HA_ATOMIC_LOAD(&pool_trim_in_progress))
 			mark_tainted(TAINTED_MEM_TRIMMING_STUCK);
 
-		/* We only emit the backtrace for stuck threads in order not to
-		 * waste precious output buffer space with non-interesting data.
-		 * Please leave this as the last instruction in this function
-		 * so that the compiler uses tail merging and the current
-		 * function does not appear in the stack.
-		 */
 		ha_dump_backtrace(buf, "             ", 0);
 	}
  leave:
 	/* end of dump, setting the buffer to 0x1 will tell the caller we're done */
-	HA_ATOMIC_OR((ulong*)&ha_thread_ctx[thr].thread_dump_buffer, 0x1UL);
+	HA_ATOMIC_OR((ulong*)DISGUISE(&ha_thread_ctx[thr].thread_dump_buffer), 0x1UL);
 }
 
 /* Triggers a thread dump from thread <thr>, either directly if it's the
@@ -1862,6 +1865,8 @@ static int debug_iohandler_fd(struct appctx *appctx)
 
 		salen = sizeof(sa);
 		if (getsockname(fd, (struct sockaddr *)&sa, &salen) != -1) {
+			int i;
+
 			if (sa.ss_family == AF_INET)
 				port = ntohs(((const struct sockaddr_in *)&sa)->sin_port);
 			else if (sa.ss_family == AF_INET6)
@@ -1869,6 +1874,12 @@ static int debug_iohandler_fd(struct appctx *appctx)
 			else
 				port = 0;
 			addrstr = sa2str(&sa, port, 0);
+			/* cleanup the output */
+			for  (i = 0; i < strlen(addrstr); i++) {
+				if (iscntrl((unsigned char)addrstr[i]) || !isprint((unsigned char)addrstr[i]))
+					addrstr[i] = '.';
+			}
+
 			chunk_appendf(&trash, " laddr=%s", addrstr);
 			free(addrstr);
 		}
@@ -1882,6 +1893,11 @@ static int debug_iohandler_fd(struct appctx *appctx)
 			else
 				port = 0;
 			addrstr = sa2str(&sa, port, 0);
+			/* cleanup the output */
+			for  (i = 0; i < strlen(addrstr); i++) {
+				if ((iscntrl((unsigned char)addrstr[i])) || !isprint((unsigned char)addrstr[i]))
+					addrstr[i] = '.';
+			}
 			chunk_appendf(&trash, " raddr=%s", addrstr);
 			free(addrstr);
 		}
@@ -2511,6 +2527,10 @@ static void feed_post_mortem_linux()
 
 static int feed_post_mortem()
 {
+	/* write an easily identifiable magic at the beginning of the struct */
+	strncpy(post_mortem.post_mortem_magic,
+		"POST-MORTEM STARTS HERE+7654321\0",
+		sizeof(post_mortem.post_mortem_magic));
 	/* kernel type, version and arch */
 	uname(&post_mortem.platform.utsname);
 
@@ -2537,6 +2557,13 @@ static int feed_post_mortem()
 	if (dump_libs(&trash, 1))
 		post_mortem.libs = strdup(trash.area);
 #endif
+
+	post_mortem.tgroup_info = ha_tgroup_info;
+	post_mortem.thread_info = ha_thread_info;
+	post_mortem.tgroup_ctx  = ha_tgroup_ctx;
+	post_mortem.thread_ctx  = ha_thread_ctx;
+	post_mortem.pools = &pools;
+	post_mortem.proxies = &proxies_list;
 
 	return ERR_NONE;
 }

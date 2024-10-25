@@ -747,11 +747,9 @@ static void mworker_reexec(int hardreload)
 
 	setenv("HAPROXY_MWORKER_REEXEC", "1", 1);
 
-	mworker_cleanup_proc();
 	mworker_proc_list_to_env(); /* put the children description in the env */
 
-	/* ensure that we close correctly every listeners before reexecuting */
-	mworker_cleanlisteners();
+	startup_logs_free(startup_logs);
 
 	/* during the reload we must ensure that every FDs that can't be
 	 * reuse (ie those that are not referenced in the proc_list)
@@ -2134,8 +2132,8 @@ static void apply_master_worker_mode()
 {
 	int worker_pid;
 	struct mworker_proc *child;
-	struct ring *tmp_startup_logs = NULL;
 	char *sock_name = NULL;
+	char *errmsg = NULL;
 
 	worker_pid = fork();
 	switch (worker_pid) {
@@ -2144,12 +2142,6 @@ static void apply_master_worker_mode()
 
 		exit(EXIT_FAILURE);
 	case 0:
-		/* in child: at this point the worker must have his own startup_logs buffer */
-		tmp_startup_logs = startup_logs_dup(startup_logs);
-		if (tmp_startup_logs == NULL)
-			exit(EXIT_FAILURE);
-		startup_logs_free(startup_logs);
-		startup_logs = tmp_startup_logs;
 		/* This one must not be exported, it's internal! */
 		unsetenv("HAPROXY_MWORKER_REEXEC");
 		ha_random_jump96(1);
@@ -2184,9 +2176,17 @@ static void apply_master_worker_mode()
 		global.nbtgroups = 1;
 		global.nbthread = 1;
 
-		/* creates MASTER proxy and attaches server to child->ipc_fd[0] */
-		if (mworker_cli_proxy_create() < 0) {
-			ha_alert("Can't create the master's CLI.\n");
+		/* creates MASTER proxy */
+		if (mworker_cli_create_master_proxy(&errmsg) < 0) {
+			ha_alert("Can't create MASTER proxy: %s\n", errmsg);
+			free(errmsg);
+			exit(EXIT_FAILURE);
+		}
+
+		/* attaches servers to all existed workers on its shared MCLI sockpair ends, ipc_fd[0] */
+		if (mworker_cli_attach_server(&errmsg) < 0) {
+			ha_alert("Can't attach servers needed for master CLI %s\n", errmsg ? errmsg : "");
+			free(errmsg);
 			exit(EXIT_FAILURE);
 		}
 
@@ -2308,6 +2308,7 @@ static void step_init_1()
 #endif
 #endif /* USE_OPENSSL */
 
+	/* saves ptr to ring in startup_logs var */
 	startup_logs_init();
 
 	if (init_acl() != 0)
@@ -3029,6 +3030,12 @@ static void set_verbosity(void) {
 static void run_master_in_recovery_mode(int argc, char **argv)
 {
 	struct mworker_proc *proc;
+	char *errmsg = NULL;
+
+	/* HAPROXY_LOAD_SUCCESS is checked in cli_io_handler_show_cli_sock() to
+	 * dump master startup logs with its alerts/warnings via master CLI sock.
+	 */
+	setenv("HAPROXY_LOAD_SUCCESS", "0", 1);
 
 	/* increment the number failed reloads */
 	list_for_each_entry(proc, &proc_list, list) {
@@ -3047,9 +3054,17 @@ static void run_master_in_recovery_mode(int argc, char **argv)
 	atexit(exit_on_failure);
 	set_verbosity();
 
-	/* creates MASTER proxy and attaches server to child->ipc_fd[0] */
-	if (mworker_cli_proxy_create() < 0) {
-		ha_alert("Can't create the master's CLI.\n");
+	/* creates MASTER proxy */
+	if (mworker_cli_create_master_proxy(&errmsg) < 0) {
+		ha_alert("Can't create MASTER proxy: %s\n", errmsg);
+		free(errmsg);
+		exit(EXIT_FAILURE);
+	}
+
+	/* attaches servers to all existed workers on its shared MCLI sockpair ends, ipc_fd[0] */
+	if (mworker_cli_attach_server(&errmsg) < 0) {
+		ha_alert("Can't attach servers needed for master CLI %s\n", errmsg ? errmsg : "");
+		free(errmsg);
 		exit(EXIT_FAILURE);
 	}
 
@@ -3656,6 +3671,7 @@ int main(int argc, char **argv)
 	struct rlimit limit;
 	int intovf = (unsigned char)argc + 1; /* let the compiler know it's strictly positive */
 	struct cfgfile *cfg, *cfg_tmp;
+	struct ring *tmp_startup_logs = NULL;
 
 	/* Catch broken toolchains */
 	if (sizeof(long) != sizeof(void *) || (intovf + 0x7FFFFFFF >= intovf)) {
@@ -4033,8 +4049,6 @@ int main(int argc, char **argv)
 #endif
 	}
 
-	global.mode &= ~MODE_STARTING;
-	reset_usermsgs_ctx();
 
 	/* start threads 2 and above */
 	setup_extra_threads(&run_thread_poll_loop);
@@ -4080,7 +4094,19 @@ int main(int argc, char **argv)
 		}
 		close(sock_pair[1]);
 		ha_free(&msg);
+
+		/* at this point the worker must have his own startup_logs buffer */
+		tmp_startup_logs = startup_logs_dup(startup_logs);
+		if (tmp_startup_logs == NULL)
+			exit(EXIT_FAILURE);
+		startup_logs_free(startup_logs);
+		startup_logs = tmp_startup_logs;
 	}
+	/* can't unset MODE_STARTING earlier, otherwise worker's last alerts
+	 * should be not written in startup logs.
+	 */
+	global.mode &= ~MODE_STARTING;
+	reset_usermsgs_ctx();
 
 	/* Finally, start the poll loop for the first thread */
 	run_thread_poll_loop(&ha_thread_info[0]);
