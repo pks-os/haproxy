@@ -150,6 +150,7 @@ void startup_logs_free(struct ring *r)
 		munmap(ring_allocated_area(r), STARTUP_LOG_SIZE);
 #endif /* ! USE_SHM_OPEN */
 	ring_free(r);
+	startup_logs = NULL;
 }
 
 /* duplicate a startup logs which was previously allocated in a shm */
@@ -339,9 +340,6 @@ static void print_message(int use_usermsgs_ctx, const char *label, const char *f
 	}
 
 	if (global.mode & MODE_STARTING) {
-		if (unlikely(!startup_logs))
-			startup_logs_init();
-
 		if (likely(startup_logs)) {
 			struct ist m[3];
 
@@ -350,7 +348,8 @@ static void print_message(int use_usermsgs_ctx, const char *label, const char *f
 			m[2] = msg_ist;
 
 			ring_write(startup_logs, ~0, 0, 0, m, 3);
-		}
+		} else
+			usermsgs_put(&msg_ist);
 	}
 	else {
 		usermsgs_put(&msg_ist);
