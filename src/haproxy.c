@@ -2456,7 +2456,7 @@ static void step_init_2(int argc, char** argv)
 	}
 
 #if defined(HA_HAVE_DUMP_LIBS)
-	if (global.mode & MODE_DUMP_LIBS) {
+	if (global.mode & MODE_DUMP_LIBS && !master) {
 		qfprintf(stdout, "List of loaded object files:\n");
 		chunk_reset(&trash);
 		if (dump_libs(&trash, ((arg_mode & (MODE_QUIET|MODE_VERBOSE)) == MODE_VERBOSE)))
@@ -2464,7 +2464,7 @@ static void step_init_2(int argc, char** argv)
 	}
 #endif
 
-	if (global.mode & MODE_DUMP_KWD)
+	if (global.mode & MODE_DUMP_KWD && !master)
 		dump_registered_keywords();
 
 	if (global.mode & MODE_DIAG) {
@@ -2786,7 +2786,7 @@ static void step_init_2(int argc, char** argv)
 
 	/* Note: we could disable any poller by name here */
 
-	if (global.mode & (MODE_VERBOSE|MODE_DEBUG)) {
+	if ((global.mode & (MODE_VERBOSE|MODE_DEBUG)) && !master) {
 		list_pollers(stderr);
 		fprintf(stderr, "\n");
 		list_filters(stderr);
@@ -3150,6 +3150,12 @@ static void read_cfg_in_discovery_mode(int argc, char **argv)
 		ha_alert("a master CLI socket was defined, but master-worker mode (-W) is not enabled.\n");
 		exit(EXIT_FAILURE);
 	}
+
+	/* in MODE_CHECK and in MODE_DUMP_CFG we just need to parse the
+	 * configuration and exit, see step_init_2()
+	 */
+	if ((global.mode & MODE_MWORKER) && (global.mode & (MODE_CHECK | MODE_DUMP_CFG)))
+		global.mode &= ~MODE_MWORKER;
 }
 
 void deinit(void)
