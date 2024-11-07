@@ -162,6 +162,7 @@ struct post_mortem {
 } post_mortem ALIGNED(256) HA_SECTION("_post_mortem") = { };
 
 unsigned int debug_commands_issued = 0;
+unsigned int warn_blocked_issued = 0;
 
 /* dumps a backtrace of the current thread that is appended to buffer <buf>.
  * Lines are prefixed with the string <prefix> which may be empty (used for
@@ -729,6 +730,87 @@ void ha_panic()
 		abort();
 }
 
+/* Dumps a state of the current thread on fd #2 and returns. It takes a great
+ * care about not using any global state variable so as to gracefully recover.
+ */
+void ha_stuck_warning(int thr)
+{
+	char msg_buf[4096];
+	struct buffer buf;
+	ullong n, p;
+
+	if (mark_tainted(TAINTED_WARN_BLOCKED_TRAFFIC) & TAINTED_PANIC) {
+		/* a panic dump is already in progress, let's not disturb it,
+		 * we'll be called via signal DEBUGSIG. By returning we may be
+		 * able to leave a current signal handler (e.g. WDT) so that
+		 * this will ensure more reliable signal delivery.
+		 */
+		return;
+	}
+
+	HA_ATOMIC_INC(&warn_blocked_issued);
+
+	buf = b_make(msg_buf, sizeof(msg_buf), 0, 0);
+
+	p = HA_ATOMIC_LOAD(&ha_thread_ctx[thr].prev_cpu_time);
+	n = now_cpu_time_thread(thr);
+
+	chunk_printf(&buf,
+		     "\nWARNING! thread %u has stopped processing traffic for %llu milliseconds\n"
+		     "    with %d streams currently blocked, prevented from making any progress.\n"
+		     "    While this may occasionally happen with inefficient configurations\n"
+		     "    involving excess of regular expressions, map_reg, or heavy Lua processing,\n"
+		     "    this must remain exceptional because the system's stability is now at risk.\n"
+		     "    Timers in logs may be reported incorrectly, spurious timeouts may happen,\n"
+		     "    some incoming connections may silently be dropped, health checks may\n"
+		     "    randomly fail, and accesses to the CLI may block the whole process. The\n"
+		     "    blocking delay before emitting this warning may be adjusted via the global\n"
+		     "    'warn-blocked-traffic-after' directive. Please check the trace below for\n"
+		     "    any clues about configuration elements that need to be corrected:\n\n",
+		     thr + 1, (n - p) / 1000000ULL,
+		     HA_ATOMIC_LOAD(&ha_thread_ctx[thr].stream_cnt));
+
+	DISGUISE(write(2, buf.area, buf.data));
+
+	/* Note below: the target thread will dump itself */
+	chunk_reset(&buf);
+	if (ha_thread_dump_fill(&buf, thr)) {
+		DISGUISE(write(2, buf.area, buf.data));
+		/* restore the thread's dump pointer for easier post-mortem analysis */
+		ha_thread_dump_done(NULL, thr);
+	}
+
+	chunk_printf(&buf, " => Trying to gracefully recover now.\n");
+	DISGUISE(write(2, buf.area, buf.data));
+
+#ifdef USE_LUA
+	if (get_tainted() & TAINTED_LUA_STUCK_SHARED && global.nbthread > 1) {
+		chunk_printf(&buf,
+			     "### Note: at least one thread was stuck in a Lua context loaded using the\n"
+			     "          'lua-load' directive, which is known for causing heavy contention\n"
+			     "          when used with threads. Please consider using 'lua-load-per-thread'\n"
+			     "          instead if your code is safe to run in parallel on multiple threads.\n");
+		DISGUISE(write(2, buf.area, buf.data));
+	}
+	else if (get_tainted() & TAINTED_LUA_STUCK) {
+		chunk_printf(&buf,
+			     "### Note: at least one thread was stuck in a Lua context in a way that suggests\n"
+			     "          heavy processing inside a dependency or a long loop that can't yield.\n"
+			     "          Please make sure any external code you may rely on is safe for use in\n"
+			     "          an event-driven engine.\n");
+		DISGUISE(write(2, buf.area, buf.data));
+	}
+#endif
+	if (get_tainted() & TAINTED_MEM_TRIMMING_STUCK) {
+		chunk_printf(&buf,
+			     "### Note: one thread was found stuck under malloc_trim(), which can run for a\n"
+			     "          very long time on large memory systems. You way want to disable this\n"
+			     "          memory reclaiming feature by setting 'no-memory-trimming' in the\n"
+			     "          'global' section of your configuration to avoid this in the future.\n");
+		DISGUISE(write(2, buf.area, buf.data));
+	}
+}
+
 /* Complain with message <msg> on stderr. If <counter> is not NULL, it is
  * atomically incremented, and the message is only printed when the counter
  * was zero, so that the message is only printed once. <taint> is only checked
@@ -895,11 +977,13 @@ static int debug_parse_cli_loop(char **args, char *payload, struct appctx *appct
 	struct timeval deadline, curr;
 	int loop = atoi(args[3]);
 	int isolate;
+	int warn;
 
 	if (!cli_has_level(appctx, ACCESS_LVL_ADMIN))
 		return 1;
 
 	isolate = strcmp(args[4], "isolated") == 0;
+	warn    = strcmp(args[4], "warn") == 0;
 
 	_HA_ATOMIC_INC(&debug_commands_issued);
 	gettimeofday(&curr, NULL);
@@ -908,8 +992,11 @@ static int debug_parse_cli_loop(char **args, char *payload, struct appctx *appct
 	if (isolate)
 		thread_isolate();
 
-	while (tv_ms_cmp(&curr, &deadline) < 0)
+	while (tv_ms_cmp(&curr, &deadline) < 0) {
+		if (warn)
+			_HA_ATOMIC_AND(&th_ctx->flags, ~TH_FL_STUCK);
 		gettimeofday(&curr, NULL);
+	}
 
 	if (isolate)
 		thread_release();
@@ -2670,7 +2757,7 @@ static struct cli_kw_list cli_kws = {{ },{
 	{{ "debug", "dev", "hash", NULL },     "debug dev hash   [msg]                  : return msg hashed if anon is set",        debug_parse_cli_hash,  NULL, NULL, NULL, 0 },
 	{{ "debug", "dev", "hex",   NULL },    "debug dev hex    <addr> [len]           : dump a memory area",                      debug_parse_cli_hex,   NULL, NULL, NULL, ACCESS_EXPERT },
 	{{ "debug", "dev", "log",   NULL },    "debug dev log    [msg] ...              : send this msg to global logs",            debug_parse_cli_log,   NULL, NULL, NULL, ACCESS_EXPERT },
-	{{ "debug", "dev", "loop",  NULL },    "debug dev loop   <ms> [isolated]        : loop this long, possibly isolated",       debug_parse_cli_loop,  NULL, NULL, NULL, ACCESS_EXPERT },
+	{{ "debug", "dev", "loop",  NULL },    "debug dev loop   <ms> [isolated|warn]   : loop this long, possibly isolated",       debug_parse_cli_loop,  NULL, NULL, NULL, ACCESS_EXPERT },
 #if defined(DEBUG_MEM_STATS)
 	{{ "debug", "dev", "memstats", NULL }, "debug dev memstats [reset|all|match ...]: dump/reset memory statistics",            debug_parse_cli_memstats, debug_iohandler_memstats, debug_release_memstats, NULL, 0 },
 #endif
