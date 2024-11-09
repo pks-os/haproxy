@@ -3,7 +3,7 @@
                           Configuration Manual
                          ----------------------
                               version 3.1
-                              2024/11/01
+                              2024/11/08
 
 
 This document covers the configuration language as implemented in the version
@@ -56,7 +56,7 @@ Summary
 3.4.      Userlists
 3.5.      Peers
 3.6.      Mailers
-3.7.      Programs
+3.7.      Programs (deprecated)
 3.8.      HTTP-errors
 3.9.      Rings
 3.10.     Log forwarding
@@ -4763,11 +4763,23 @@ timeout mail <time>
         timeout mail 20s
         mailer smtp1 192.168.0.1:587
 
-3.7. Programs
--------------
+3.7. Programs (deprecated)
+--------------------------
+
+This section is deprecated and should disappear with HAProxy 3.3. The section
+could be replaced easily by separated process managers. Systemd unit files or
+sysvinit scripts could replace this section as they are more reliable. In docker
+environments, some alternatives can also be found such as s6 or supervisord.
+
 In master-worker mode, it is possible to launch external binaries with the
 master, these processes are called programs. These programs are launched and
 managed the same way as the workers.
+
+Since version 3.1, the program section has a slightly different behavior, the
+section is parsed and the program is started from the master, but the rest of
+the configuration is loaded in the worker. This mean the program configuration
+is completely separated from the worker configuration, and a program could be
+reexecuted even if the worker configuration is wrong upon a reload.
 
 During a reload of HAProxy, those processes are dealing with the same
 sequence as a worker:
