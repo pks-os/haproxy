@@ -2253,8 +2253,12 @@ static int debug_parse_cli_counters(char **args, char *payload, struct appctx *a
 			ctx->types |= 1 << DBG_COUNT_IF;
 			continue;
 		}
+		else if (strcmp(args[arg], "glt") == 0) {
+			ctx->types |= 1 << DBG_GLITCH;
+			continue;
+		}
 		else
-			return cli_err(appctx, "Expects an optional action ('reset','show'), optional types ('bug','chk','cnt') and optionally 'all' to even dump null counters.\n");
+			return cli_err(appctx, "Expects an optional action ('reset','show'), optional types ('bug','chk','cnt','glt') and optionally 'all' to even dump null counters.\n");
 	}
 
 	if (action == 1) { // reset
@@ -2288,6 +2292,7 @@ static int debug_iohandler_counters(struct appctx *appctx)
 		[DBG_BUG]      = "BUG",
 		[DBG_BUG_ONCE] = "CHK",
 		[DBG_COUNT_IF] = "CNT",
+		[DBG_GLITCH]   = "GLT",
 	};
 	struct dev_cnt_ctx *ctx = appctx->svcctx;
 	struct debug_count *ptr;
@@ -2312,9 +2317,10 @@ static int debug_iohandler_counters(struct appctx *appctx)
 		}
 
 		if (ptr->type < DBG_COUNTER_TYPES)
-			chunk_appendf(&trash, "%-10u %3s %s:%d %s(): %s\n",
+			chunk_appendf(&trash, "%-10u %3s %s:%d %s()%s%s\n",
 				      ptr->count, bug_type[ptr->type],
-				      name, ptr->line, ptr->func, ptr->desc);
+				      name, ptr->line, ptr->func,
+				      *ptr->desc ? ": " : "", ptr->desc);
 
 		if (applet_putchk(appctx, &trash) == -1) {
 			ctx->start = ptr;
