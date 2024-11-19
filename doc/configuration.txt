@@ -3320,7 +3320,7 @@ tune.buffers.reserve <number>
   a user would want to change this value, unless a core developer suggests to
   change it for a very specific reason.
 
-tune.bufsize <number>
+tune.bufsize <size>
   Sets the buffer size to this size (in bytes). Lower values allow more
   streams to coexist in the same amount of RAM, and higher values allow some
   applications with very large cookies to work. The default value is 16384 and
@@ -3336,7 +3336,7 @@ tune.bufsize <number>
   value set using this parameter will automatically be rounded up to the next
   multiple of 8 on 32-bit machines and 16 on 64-bit machines.
 
-tune.bufsize.small <number>
+tune.bufsize.small <size>
   Sets the size in bytes for small buffers. The defaults value is 1024.
 
   These buffers are designed to be used in some specific contexts where memory
@@ -3899,7 +3899,7 @@ tune.peers.max-updates-at-once <number>
   Conversely low values may also incur higher CPU overhead, and take longer
   to complete. The default value is 200 and it is suggested not to change it.
 
-tune.pipesize <number>
+tune.pipesize <size>
   Sets the kernel pipe buffer size to this size (in bytes). By default, pipes
   are the default size for the system. But sometimes when using TCP splicing,
   it can improve performance to increase pipe sizes, especially if it is
@@ -4085,8 +4085,8 @@ tune.renice.startup <number>
 
   See also: tune.renice.runtime
 
-tune.rcvbuf.backend <number>
-tune.rcvbuf.frontend <number>
+tune.rcvbuf.backend  <size>
+tune.rcvbuf.frontend <size>
   For the kernel socket receive buffer size on non-connected sockets to this
   size. This can be used QUIC in listener mode and log-forward on the frontend.
   The default system buffers might sometimes be too small for sockets receiving
@@ -4101,8 +4101,8 @@ tune.rcvbuf.frontend <number>
   counter parts, as well as "tune.sndbuf.backend" and "tune.sndbuf.frontend"
   for the send setting.
 
-tune.rcvbuf.client <number>
-tune.rcvbuf.server <number>
+tune.rcvbuf.client <size>
+tune.rcvbuf.server <size>
   Forces the kernel socket receive buffer size on the client or the server side
   to the specified value in bytes. This value applies to all TCP/HTTP frontends
   and backends. It should normally never be set, and the default size (0) lets
@@ -4111,7 +4111,7 @@ tune.rcvbuf.server <number>
   order to save kernel memory by preventing it from buffering too large amounts
   of received data. Lower values will significantly increase CPU usage though.
 
-tune.recv_enough <number>
+tune.recv_enough <size>
   HAProxy uses some hints to detect that a short read indicates the end of the
   socket buffers. One of them is that a read returns more than <recv_enough>
   bytes, which defaults to 10136 (7 segments of 1448 each). This default value
@@ -4148,8 +4148,8 @@ tune.sched.low-latency { on | off }
   massive traffic, at the expense of a higher impact on this large traffic.
   For regular usage it is better to leave this off. The default value is off.
 
-tune.sndbuf.backend <number>
-tune.sndbuf.frontend <number>
+tune.sndbuf.backend  <size>
+tune.sndbuf.frontend <size>
   For the kernel socket send buffer size on non-connected sockets to this size.
   This can be used for UNIX socket and UDP logging on the backend side, and for
   QUIC in listener mode on the frontend. The default system buffers might
@@ -4164,8 +4164,8 @@ tune.sndbuf.frontend <number>
   "tune.sndbuf.server" for their connected socket counter parts, as well as
   "tune.rcvbuf.backend" and "tune.rcvbuf.frontend" for the receive setting.
 
-tune.sndbuf.client <number>
-tune.sndbuf.server <number>
+tune.sndbuf.client <size>
+tune.sndbuf.server <size>
   Forces the kernel socket send buffer size on the client or the server side to
   the specified value in bytes. This value applies to all TCP/HTTP frontends
   and backends. It should normally never be set, and the default size (0) lets
@@ -21485,14 +21485,15 @@ utime(<format>[,<offset>])
       # e.g.  20140710162350 127.0.0.1:57325
       log-format %[date,utime(%Y%m%d%H%M%S)]\ %ci:%cp
 
-when(<condition>)
+when(<condition>[,<args>...])
   Evaluates the condition and when true, passes the input sample as-is to the
   output, otherwise return nothing. This is designed specifically to produce
   some rarely needed data that should only be emitted under certain conditions,
   such as debugging information when an error is met.
 
   The condition is made of a keyword among the list below, optionally preceeded
-  by an exclamation mark ('!') to negate it:
+  by an exclamation mark ('!') to negate it, and optionally suffixed by some
+  arguments specific to that condition:
 
     - "error" returns true when an error was encountered during the processing
       of the request or stream. It uses the same rules as "dontlog-normal"
@@ -21512,6 +21513,12 @@ when(<condition>)
 
     - "toapplet" returns true when the request was processed by an applet.
 
+    - "acl" returns true when the ACL designated by the next argument evaluates
+      to true. Note that the ACL is evaluated inline by the converter, so that
+      what it refers to must be valid in that context. A particular use case
+      consists in evaluating if the total transfer time is too long or not
+      before deciding to log detauls from abnormally long transfers.
+
   Note that the content is evaluated in any case, so doing this does not avoid
   the generation of that information. It's only meant to avoid producing that
   information.
@@ -21527,6 +21534,13 @@ when(<condition>)
     Here, the "dbg" field in the log will only contain an dash ('-') to
     indicate a missing content when the rule is not validated, and will emit a
     whole debugging block when it is.
+
+  Example
+    # log "dbg={-}" when fine, or "dbg={... debug info ...}" on slow transfers
+    acl slow_xfer res.timer.data ge 10000   # more than 10s is slow
+    log-format "$HAPROXY_HTTP_LOG_FMT                                         \
+                fsdbg={%[fs.debug_str,when(acl,slow_xfer)]}                   \
+                bsdbg={%[bs.debug_str,when(acl,slow_xfer)]}"
 
   Example
     # only emit the backend src/port when a real connection was issued:

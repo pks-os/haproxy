@@ -164,21 +164,21 @@ struct global {
 		int maxaccept;     /* max number of consecutive accept() */
 		int options;       /* various tuning options */
 		int runqueue_depth;/* max number of tasks to run at once */
-		int recv_enough;   /* how many input bytes at once are "enough" */
-		int bufsize;       /* buffer size in bytes, defaults to BUFSIZE */
-		int bufsize_small; /* small buffer size in bytes */
+		uint recv_enough;  /* how many input bytes at once are "enough" */
+		uint bufsize;      /* buffer size in bytes, defaults to BUFSIZE */
+		uint bufsize_small;/* small buffer size in bytes */
 		int maxrewrite;    /* buffer max rewrite size in bytes, defaults to MAXREWRITE */
 		int reserved_bufs; /* how many buffers can only be allocated for response */
 		int buf_limit;     /* if not null, how many total buffers may only be allocated */
-		int client_sndbuf; /* set client sndbuf to this value if not null */
-		int client_rcvbuf; /* set client rcvbuf to this value if not null */
-		int server_sndbuf; /* set server sndbuf to this value if not null */
-		int server_rcvbuf; /* set server rcvbuf to this value if not null */
-		int frontend_sndbuf; /* set frontend dgram sndbuf to this value if not null */
-		int frontend_rcvbuf; /* set frontend dgram rcvbuf to this value if not null */
-		int backend_sndbuf;  /* set backend dgram sndbuf to this value if not null */
-		int backend_rcvbuf;  /* set backend dgram rcvbuf to this value if not null */
-		int pipesize;      /* pipe size in bytes, system defaults if zero */
+		uint client_sndbuf;   /* set client sndbuf to this value if not null */
+		uint client_rcvbuf;   /* set client rcvbuf to this value if not null */
+		uint server_sndbuf;   /* set server sndbuf to this value if not null */
+		uint server_rcvbuf;   /* set server rcvbuf to this value if not null */
+		uint frontend_sndbuf; /* set frontend dgram sndbuf to this value if not null */
+		uint frontend_rcvbuf; /* set frontend dgram rcvbuf to this value if not null */
+		uint backend_sndbuf;  /* set backend dgram sndbuf to this value if not null */
+		uint backend_rcvbuf;  /* set backend dgram rcvbuf to this value if not null */
+		uint pipesize;     /* pipe size in bytes, system defaults if zero */
 		int max_http_hdr;  /* max number of HTTP headers, use MAX_HTTP_HDR if zero */
 		int requri_len;    /* max len of request URI, use REQURI_LEN if zero */
 		int cookie_len;    /* max length of cookie captures */
