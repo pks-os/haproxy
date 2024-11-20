@@ -387,6 +387,9 @@ void free_proxy(struct proxy *p)
 		LIST_DELETE(&bind_conf->by_fe);
 		free(bind_conf->guid_prefix);
 		free(bind_conf->rhttp_srvname);
+#ifdef USE_QUIC
+		free(bind_conf->quic_cc_algo);
+#endif
 		free(bind_conf);
 	}
 
@@ -618,6 +621,12 @@ static int proxy_parse_timeout(char **args, int section, struct proxy *proxy,
 	else if (res) {
 		memprintf(err, "unexpected character '%c' in 'timeout %s'", *res, name);
 		return -1;
+	}
+
+	if (warn_if_lower(args[1], 100)) {
+		memprintf(err, "'timeout %s %u' in %s '%s' is suspiciously small for a value in milliseconds. Please use an explicit unit ('%ums') if that was the intent.",
+		          name, timeout, proxy_type_str(proxy), proxy->id, timeout);
+		retval = 1;
 	}
 
 	if (!(proxy->cap & cap)) {

@@ -13,7 +13,7 @@
 #include <haproxy/global.h>
 #include <haproxy/listener.h>
 #include <haproxy/proxy.h>
-#include <haproxy/quic_cc-t.h>
+#include <haproxy/quic_cc.h>
 #include <haproxy/quic_rules.h>
 #include <haproxy/tools.h>
 
@@ -69,13 +69,46 @@ static unsigned long parse_window_size(const char *kw, char *value,
 	return 0;
 }
 
+/* Parse <value> as a number of datagrams allowed for burst.
+ *
+ * Returns the parsed value or 0 on error.
+ */
+static uint parse_burst(const char *kw, char *value, char **end_opt, char **err)
+{
+	uint burst;
+
+	errno = 0;
+	burst = strtoul(value, end_opt, 0);
+	if (*end_opt == value || errno != 0) {
+		memprintf(err, "'%s' : could not parse burst value", kw);
+		goto fail;
+	}
+
+	if (!burst || burst > 1024) {
+		memprintf(err, "'%s' : pacing burst value must be between 1 and 1024", kw);
+		goto fail;
+	}
+
+	return burst;
+
+ fail:
+	return 0;
+}
+
 /* parse "quic-cc-algo" bind keyword */
 static int bind_parse_quic_cc_algo(char **args, int cur_arg, struct proxy *px,
                                    struct bind_conf *conf, char **err)
 {
-	struct quic_cc_algo *cc_algo;
+	struct quic_cc_algo *cc_algo = NULL;
+	const char *str_pacing = "-pacing";
 	const char *algo = NULL;
 	char *arg;
+
+	cc_algo = calloc(1, sizeof(struct quic_cc_algo));
+	if (!cc_algo) {
+		memprintf(err, "'%s' : out of memory", args[cur_arg]);
+		goto fail;
+	}
 
 	if (!*args[cur_arg + 1]) {
 		memprintf(err, "'%s' : missing control congestion algorithm", args[cur_arg]);
@@ -86,14 +119,27 @@ static int bind_parse_quic_cc_algo(char **args, int cur_arg, struct proxy *px,
 	if (strncmp(arg, QUIC_CC_NEWRENO_STR, strlen(QUIC_CC_NEWRENO_STR)) == 0) {
 		/* newreno */
 		algo = QUIC_CC_NEWRENO_STR;
-		cc_algo = &quic_cc_algo_nr;
+		*cc_algo = quic_cc_algo_nr;
 		arg += strlen(QUIC_CC_NEWRENO_STR);
 	}
 	else if (strncmp(arg, QUIC_CC_CUBIC_STR, strlen(QUIC_CC_CUBIC_STR)) == 0) {
 		/* cubic */
 		algo = QUIC_CC_CUBIC_STR;
-		cc_algo = &quic_cc_algo_cubic;
+		*cc_algo = quic_cc_algo_cubic;
 		arg += strlen(QUIC_CC_CUBIC_STR);
+
+		if (strncmp(arg, str_pacing, strlen(str_pacing)) == 0) {
+			if (!experimental_directives_allowed) {
+				memprintf(err, "'%s' : support for pacing is experimental, must be allowed via a global "
+				          "'expose-experimental-directives'\n", args[cur_arg]);
+				goto fail;
+			}
+
+			cc_algo->pacing_rate = quic_cc_default_pacing_rate;
+			cc_algo->pacing_burst = quic_cc_default_pacing_burst;
+			conf->quic_pacing_burst = 1;
+			arg += strlen(str_pacing);
+		}
 	}
 	else if (strncmp(arg, QUIC_CC_NO_CC_STR, strlen(QUIC_CC_NO_CC_STR)) == 0) {
 		/* nocc */
@@ -104,7 +150,7 @@ static int bind_parse_quic_cc_algo(char **args, int cur_arg, struct proxy *px,
 		}
 
 		algo = QUIC_CC_NO_CC_STR;
-		cc_algo = &quic_cc_algo_nocc;
+		*cc_algo = quic_cc_algo_nocc;
 		arg += strlen(QUIC_CC_NO_CC_STR);
 	}
 	else {
@@ -113,25 +159,60 @@ static int bind_parse_quic_cc_algo(char **args, int cur_arg, struct proxy *px,
 	}
 
 	if (*arg++ == '(') {
-		unsigned long cwnd;
 		char *end_opt;
 
-		cwnd = parse_window_size(args[cur_arg], arg, &end_opt, err);
-		if (!cwnd)
-			goto fail;
+		if (*arg == ')')
+			goto out;
 
-		if (*end_opt != ')') {
-			memprintf(err, "'%s' : expects %s(<max window>)", args[cur_arg + 1], algo);
-			goto fail;
+		if (*arg != ',') {
+			unsigned long cwnd = parse_window_size(args[cur_arg], arg, &end_opt, err);
+			if (!cwnd)
+				goto fail;
+
+			conf->max_cwnd = cwnd;
+
+			if (*end_opt == ')') {
+				goto out;
+			}
+			else if (*end_opt != ',') {
+				memprintf(err, "'%s' : cannot parse max-window argument for '%s' algorithm", args[cur_arg], algo);
+				goto fail;
+			}
+			arg = end_opt;
 		}
 
-		conf->max_cwnd = cwnd;
+		if (*++arg == ')')
+			goto out;
+
+		if (*arg != ',') {
+			uint burst = parse_burst(args[cur_arg], arg, &end_opt, err);
+			if (!burst)
+				goto fail;
+
+			conf->quic_pacing_burst = burst;
+
+			if (*end_opt == ')') {
+				goto out;
+			}
+			else if (*end_opt != ',') {
+				memprintf(err, "'%s' : cannot parse burst argument for '%s' algorithm", args[cur_arg], algo);
+				goto fail;
+			}
+			arg = end_opt;
+		}
+
+		if (*++arg != ')') {
+			memprintf(err, "'%s' : too many argument for '%s' algorithm", args[cur_arg], algo);
+			goto fail;
+		}
 	}
 
+ out:
 	conf->quic_cc_algo = cc_algo;
 	return 0;
 
  fail:
+	free(cc_algo);
 	return ERR_ALERT | ERR_FATAL;
 }
 

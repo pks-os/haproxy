@@ -1991,6 +1991,7 @@ int http_process_res_common(struct stream *s, struct channel *rep, int an_bit, s
 	goto return_prx_err;
 
  return_bad_res:
+	s->logs.t_data = -1; /* was not a valid response */
 	txn->status = 502;
 	stream_inc_http_fail_ctr(s);
 	_HA_ATOMIC_INC(&s->be->be_counters.failed_resp);
@@ -2006,7 +2007,6 @@ int http_process_res_common(struct stream *s, struct channel *rep, int an_bit, s
 	/* fall through */
 
  return_prx_cond:
-	s->logs.t_data = -1; /* was not a valid response */
 	s->scb->flags |= SC_FL_NOLINGER;
 
 	http_set_term_flags(s);
@@ -2420,6 +2420,7 @@ int http_apply_redirect_rule(struct redirect_rule *rule, struct stream *s, struc
 		}
 		case REDIRECT_TYPE_LOCATION:
 		default:
+			memset(chunk->area, 0x50, chunk->size);
 			if (rule->rdr_str) { /* this is an old "redirect" rule */
 				/* add location */
 				if (!chunk_memcat(chunk, rule->rdr_str, rule->rdr_len))
@@ -2436,6 +2437,36 @@ int http_apply_redirect_rule(struct redirect_rule *rule, struct stream *s, struc
 				}
 
 				chunk->data += len;
+			}
+
+			if (rule->flags & REDIRECT_FLAG_KEEP_QS) {
+				struct ist path;
+				struct http_uri_parser parser;
+				char *ptr, *end;
+				char sep = '?';
+
+				ptr = memchr(chunk->area, '?', chunk->data);
+				if (ptr != NULL)
+					sep = ((ptr+1 != b_tail(chunk)) ? '&' : '\0');
+
+				sl = http_get_stline(htx);
+				parser = http_uri_parser_init(htx_sl_req_uri(sl));
+				path = http_parse_path(&parser);
+				ptr = istptr(path);
+				end = istend(path);
+
+				/* look up the '?' */
+				do {
+					if (ptr == end)
+						return 0;
+				} while (*ptr++ != '?');
+
+				if (ptr == end)
+					break;
+				if (sep != '\0' && !chunk_memcat(chunk, &sep, 1))
+					goto fail;
+				if (!chunk_memcat(chunk, ptr, end-ptr))
+					goto fail;
 			}
 			break;
 	}
@@ -2487,8 +2518,13 @@ int http_apply_redirect_rule(struct redirect_rule *rule, struct stream *s, struc
 			goto fail;
 	}
 
-	if (rule->cookie_len) {
-		if (!htx_add_header(htx, ist("Set-Cookie"), ist2(rule->cookie_str, rule->cookie_len)))
+	if (rule->flags & REDIRECT_FLAG_COOKIE_FMT) {
+		trash.data = build_logline(s, trash.area, trash.size, &rule->cookie.fmt);
+		if (!htx_add_header(htx, ist("Set-Cookie"), ist2(trash.area, trash.data)))
+			goto fail;
+	}
+	else if (isttest(rule->cookie.str)) {
+		if (!htx_add_header(htx, ist("Set-Cookie"), rule->cookie.str))
 			goto fail;
 	}
 

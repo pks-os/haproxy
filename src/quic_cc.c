@@ -47,3 +47,19 @@ void quic_cc_state_trace(struct buffer *buf, const struct quic_cc *cc)
 {
 	cc->algo->state_trace(buf, cc);
 }
+
+/* Return rate in nanoseconds between each datagram emission for a smooth pacing. */
+uint quic_cc_default_pacing_rate(const struct quic_cc *cc)
+{
+	struct quic_cc_path *path = container_of(cc, struct quic_cc_path, cc);
+	return path->loss.srtt * 1000000 / (path->cwnd / path->mtu + 1);
+}
+
+/* Return the max number of datagrams which can be emitted in a burst with
+ * pacing. Must return a strictly positive value.
+ */
+uint quic_cc_default_pacing_burst(const struct quic_cc *cc)
+{
+	struct quic_cc_path *path = container_of(cc, struct quic_cc_path, cc);
+	return path->pacing_burst;
+}

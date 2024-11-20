@@ -642,7 +642,26 @@ extern time_t my_timegm(const struct tm *tm);
  * <ret> is left untouched.
  */
 extern const char *parse_time_err(const char *text, unsigned *ret, unsigned unit_flags);
-extern const char *parse_size_err(const char *text, unsigned *ret);
+extern const char *parse_size_ui(const char *text, unsigned *ret);
+extern const char *parse_size_ull(const char *text, ullong *ret);
+
+/* Parse a size from <_test> into <_ret> which must be compatible with a
+ * uint or ullong. The return value is a pointer to the first unparsable
+ * character (if any) or NULL if everything's OK.
+ */
+#define parse_size_err(_text, _ret) ({			\
+	const char *_err;				\
+	if (sizeof(*(_ret)) > sizeof(int)) {		\
+		unsigned long long _tmp;		\
+		_err = parse_size_ull(_text, &_tmp);	\
+		*_ret = _tmp;				\
+	} else {					\
+		unsigned int _tmp;			\
+		_err = parse_size_ui(_text, &_tmp);	\
+		*_ret = _tmp;				\
+	}						\
+	_err;						\
+})
 
 /*
  * Parse binary string written in hexadecimal (source) and store the decoded
@@ -1256,6 +1275,23 @@ static inline void update_char_fingerprint(uint8_t *fp, char prev, char curr)
 	fp[32 * from + to]++;
 }
 
+/* checks that the numerical argument, if passed without units and is non-zero,
+ * is at least as large as value <min>. It returns 1 if the value is too small,
+ * otherwise zero. This is used to warn about the use of small values without
+ * units.
+ */
+static inline int warn_if_lower(const char *text, long min)
+{
+	int digits;
+	long value;
+
+	digits = strspn(text, "0123456789");
+	if (digits < strlen(text))
+		return 0; // there are non-digits here.
+
+	value = atol(text);
+	return value && value < min;
+}
 
 /* compare the current OpenSSL version to a string */
 int openssl_compare_current_version(const char *version);

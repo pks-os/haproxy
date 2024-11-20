@@ -37,6 +37,10 @@ void quic_cc_init(struct quic_cc *cc, struct quic_cc_algo *algo, struct quic_con
 void quic_cc_event(struct quic_cc *cc, struct quic_cc_event *ev);
 void quic_cc_state_trace(struct buffer *buf, const struct quic_cc *cc);
 
+/* Pacing callbacks */
+uint quic_cc_default_pacing_rate(const struct quic_cc *cc);
+uint quic_cc_default_pacing_burst(const struct quic_cc *cc);
+
 static inline const char *quic_cc_state_str(enum quic_cc_algo_state_type state)
 {
 	switch (state) {
@@ -78,7 +82,8 @@ static inline void *quic_cc_priv(const struct quic_cc *cc)
  * which is true for an IPv4 path, if not false for an IPv6 path.
  */
 static inline void quic_cc_path_init(struct quic_cc_path *path, int ipv4, unsigned long max_cwnd,
-                                     struct quic_cc_algo *algo, struct quic_conn *qc)
+                                     struct quic_cc_algo *algo, int burst,
+                                     struct quic_conn *qc)
 {
 	unsigned int max_dgram_sz;
 
@@ -92,6 +97,7 @@ static inline void quic_cc_path_init(struct quic_cc_path *path, int ipv4, unsign
 	path->prep_in_flight = 0;
 	path->in_flight = 0;
 	path->ifae_pkts = 0;
+	path->pacing_burst = burst;
 	quic_cc_init(&path->cc, algo, qc);
 }
 
@@ -106,7 +112,6 @@ static inline size_t quic_cc_path_prep_data(struct quic_cc_path *path)
 
 	return path->cwnd - path->prep_in_flight;
 }
-
 
 #endif /* USE_QUIC */
 #endif /* _PROTO_QUIC_CC_H */

@@ -617,7 +617,7 @@ struct task *quic_conn_app_io_cb(struct task *t, void *context, unsigned int sta
 	if (qel_need_sending(qc->ael, qc))
 		qel_register_send(&send_list, qc->ael, &qc->ael->pktns->tx.frms);
 
-	if (!qc_send(qc, 0, &send_list)) {
+	if (!qc_send(qc, 0, &send_list, 0)) {
 		TRACE_DEVEL("qc_send() failed", QUIC_EV_CONN_IO_CB, qc);
 		goto out;
 	}
@@ -877,7 +877,7 @@ struct task *quic_conn_io_cb(struct task *t, void *context, unsigned int state)
 			qel_register_send(&send_list, qel, &qel->pktns->tx.frms);
 	}
 
-	if (!qc_send(qc, 0, &send_list)) {
+	if (!qc_send(qc, 0, &send_list, 0)) {
 		TRACE_DEVEL("qc_send() failed", QUIC_EV_CONN_IO_CB, qc);
 		goto out;
 	}
@@ -1224,7 +1224,8 @@ struct quic_conn *qc_new_conn(const struct quic_version *qv, int ipv4,
 	/* Only one path at this time (multipath not supported) */
 	qc->path = &qc->paths[0];
 	quic_cc_path_init(qc->path, ipv4, server ? l->bind_conf->max_cwnd : 0,
-	                  cc_algo ? cc_algo : default_quic_cc_algo, qc);
+	                  cc_algo ? cc_algo : default_quic_cc_algo,
+	                  l->bind_conf->quic_pacing_burst, qc);
 
 	memcpy(&qc->local_addr, local_addr, sizeof(qc->local_addr));
 	memcpy(&qc->peer_addr, peer_addr, sizeof qc->peer_addr);
@@ -1807,7 +1808,7 @@ void qc_notify_err(struct quic_conn *qc)
 		 * is made between MUX and quic-conn layer, wake up could be
 		 * conducted only with qc.subs.
 		 */
-		tasklet_wakeup(qc->qcc->wait_event.tasklet);
+		qcc_wakeup(qc->qcc);
 	}
 
 	TRACE_LEAVE(QUIC_EV_CONN_CLOSE, qc);

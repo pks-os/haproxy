@@ -167,6 +167,8 @@ enum {
 	REDIRECT_FLAG_APPEND_SLASH = 2,	/* append a slash if missing at the end */
 	REDIRECT_FLAG_FROM_REQ = 4,     /* redirect rule on the request path */
 	REDIRECT_FLAG_IGNORE_EMPTY = 8, /* silently ignore empty location expressions */
+	REDIRECT_FLAG_KEEP_QS = 16,	/* append the query string to location, if any */
+	REDIRECT_FLAG_COOKIE_FMT = 32,  /* The cookie value is a log-format stirng*/
 };
 
 /* Redirect types (location, prefix, extended ) */
