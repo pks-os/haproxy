@@ -852,6 +852,26 @@ double quotes inside (so that the double quotes are not stripped again):
                                           arg2 ___________/    /
                                           arg3 _______________/
 
+But in this case it's important to note that delimiters embedded into the
+higher level string remain pure characters and are not delimiters anymore. It
+particularly means that spaces and tabs around commas are part of the string.
+The example below is wrong on multiple points:
+
+    http-request set-path '%[path, regsub("(foo|bar)", blah, g)]'
+    ------------ --------  --------------------------------------
+       word1       word2    word3=%[path, regsub("(foo|bar)", blah, g)]
+                                        |--------|---------||-----|--|
+                       converter=" regsub" _/        /         /   /
+                                    arg1=(foo|bar) _/         /   /
+                                     arg2=" blah" ___________/   /
+                                        arg3=" g" ______________/
+
+The single fact of surrounding commas with spaces resulted in the spaces being
+part of the field itself, hence the converter " regsub" (starting with a
+space), which won't be found and will trigger an error, but more subtly, the
+replacement string " blah" will insert a space in the output. A good rule of
+thumb is to never insert unneeded spaces inside expressions.
+
 When using regular expressions, it can happen that the dollar ('$') character
 appears in the expression or that a backslash ('\') is used in the replacement
 string. In this case these ones will also be processed inside the double quotes
@@ -915,66 +935,136 @@ existing variables, not empty ones.
       user "$HAPROXY_USER"
 
 Some variables are defined by HAProxy, they can be used in the configuration
-file, or could be inherited by a program (See 3.7. Programs):
+file, or could be inherited by a program (See 3.7. Programs). These variables
+are listed in the matrix below, and they are classified among four categories:
 
-* HAPROXY_LOCALPEER: defined at the startup of the process which contains the
-  name of the local peer. (See "-L" in the management guide.)
+  * usable: the variable is accessible from the configuration, either to be
+    resolved as-is, or used within conditional blocks or predicates to enable
+    or disable this some configuration fragments, as described in section 2.4
+    "Conditional blocks".
 
-* HAPROXY_CFGFILES: list of the configuration files loaded by HAProxy,
-  separated by semicolons. Can be useful in the case you specified a
-  directory.
+  * modifiable: the variable can be redefined or unset in the configuration via
+    "setenv"/"unsetenv" keywords.
 
-* HAPROXY_HTTP_LOG_FMT: contains the value of the default HTTP log format as
-  defined in section 8.2.3 "HTTP log format". It can be used to override the
-  default log format without having to copy the whole original definition.
+  * listed: the variable is listed in CLI's "show env" command output,
+    described in section 9.3 "Unix Sockets commands" of the management guide.
 
-* HAPROXY_HTTP_CLF_LOG_FMT: contains the value of the default HTTP CLF log
-  format as defined in section 8.2.3 "HTTP log format". It can be used to
-  override the default log format without having to copy the whole original
-  definition.
+  * exported: variable is exported to launch programs in a modified environment
+    (See section 3.7 "Programs"). Note that this does not apply to external
+    checks which have their own rules regarding exported variables.
 
-  Example:
-    # Add the rule that gave the final verdict to the log
-    log-format "${HAPROXY_TCP_LOG_FMT} lr=last_rule_file:last_rule_line"
+There also two subcategories "master" and "worker", respectively marked 'M' and
+'W' in the table below, showing the differences between the two processes when
+HAProxy is launched in master-worker mode.
 
-* HAPROXY_HTTPS_LOG_FMT: similar to HAPROXY_HTTP_LOG_FMT but for HTTPS log
-  format as defined in section 8.2.4 "HTTPS log format".
+  * master: the variable is set and accessible from the master process. So, it
+    will appear in the master CLI's "show env" output and it can be used in
+    conditional blocks or directives to enable some special settings for the
+    master (see examples in section 2.4 "Conditional blocks").
 
-* HAPROXY_TCP_LOG_FMT: similar to HAPROXY_HTTP_LOG_FMT but for TCP log format
-  as defined in section 8.2.2 "TCP log format".
+  * worker: the variable is set and accessible from the worker process. It will
+    appear in the worker CLI's "show env" (or the master CLI's "@1 show env")
+    and it may as well condition some worker process parameters (see examples
+    from section 2.4 "Conditional blocks").
 
-* HAPROXY_TCP_CLF_LOG_FMT: similar to HAPROXY_HTTP_CLF_LOG_FMT but for TCP CLF
-  log format as defined in section 8.2.2 "TCP log format".
+In standalone mode (without "-W" option nor the "master-worker" keyword) the
+process behaves like a worker, except for variables "HAPROXY_MASTER_CLI" and
+"HAPROXY_MWORKER" which are not defined.
 
-* HAPROXY_MWORKER: In master-worker mode, this variable is set to 1.
+Some variables are marked as not usable and not modifiable:
 
-* HAPROXY_CLI: configured listeners addresses of the stats socket for every
-  processes, separated by semicolons.
+  * HAPROXY_CFGFILES
+  * HAPROXY_MWORKER
+  * HAPROXY_CLI
+  * HAPROXY_MASTER_CLI
+  * HAPROXY_LOCALPEER
 
-* HAPROXY_MASTER_CLI: In master-worker mode, listeners addresses of the master
-  CLI, separated by semicolons.
+Their values are undefined during configuration parsing, they are set later
+during the initialization. So, it's recommended not to use these variables
+within conditional blocks and not to reference them in the global section's
+"setenv"/"resetenv"/"unsetenv" keywords.
 
-* HAPROXY_STARTUP_VERSION: contains the version used to start, in master-worker
-  mode this is the version which was used to start the master, even after
-  updating the binary and reloading.
+The table below summaries the status of each variable for the different working
+modes:
 
-* HAPROXY_BRANCH: contains the HAProxy branch version (such as "2.8"). It does
-  not contain the full version number. It can be useful in case of migration
-  if resources (such as maps or certificates) are in a path containing the
-  branch number.
+  +--------------------------+----------+---------+------------+-----------+
+  |        variable          | exported | usable  | modifiable |  listed   |
+  |                          |          +---------+------------+-----------+
+  |                          |          |  M | W  |   M  |  W  |  M  |  W  |
+  +--------------------------+----------+----+----+------+-----+-----+-----+
+  | HAPROXY_STARTUP_VERSION  |    X     |  X | X  |      |     |  X  |  X  |
+  | HAPROXY_BRANCH           |    X     |  X | X  |      |     |  X  |  X  |
+  | HAPROXY_CFGFILES         |    X     |    |    |      |     |  X  |  X  |
+  | HAPROXY_MWORKER          |    X     |    |    |      |     |  X  |  X  |
+  | HAPROXY_CLI              |          |    |    |      |     |     |  X  |
+  | HAPROXY_MASTER_CLI       |          |    |    |      |     |  X  |     |
+  | HAPROXY_LOCALPEER        |          |    |    |      |     |     |  X  |
+  | HAPROXY_HTTP_LOG_FMT     |          |    | X  |      |  X  |     |     |
+  | HAPROXY_HTTP_CLF_LOG_FMT |          |    | X  |      |  X  |     |     |
+  | HAPROXY_HTTPS_LOG_FMT    |          |    | X  |      |  X  |     |     |
+  | HAPROXY_TCP_LOG_FMT      |          |    | X  |      |  X  |     |     |
+  +--------------------------+----------+----+----+------+-----+-----+-----+
+
+The variables in question are the following:
+
+  * HAPROXY_LOCALPEER: defined at the startup of the process which contains the
+    name of the local peer. (See "-L" in the management guide.)
+
+  * HAPROXY_CFGFILES: list of the configuration files loaded by HAProxy,
+    separated by semicolons. Can be useful in the case you specified a
+    directory.
+
+  * HAPROXY_HTTP_LOG_FMT: contains the value of the default HTTP log format as
+    defined in section 8.2.3 "HTTP log format". It can be used to override the
+    default log format without having to copy the whole original definition.
+
+  * HAPROXY_HTTP_CLF_LOG_FMT: contains the value of the default HTTP CLF log
+    format as defined in section 8.2.3 "HTTP log format". It can be used to
+    override the default log format without having to copy the whole original
+    definition.
+
+    Example:
+      # Add the rule that gave the final verdict to the log
+      log-format "${HAPROXY_TCP_LOG_FMT} lr=last_rule_file:last_rule_line"
+
+  * HAPROXY_HTTPS_LOG_FMT: similar to HAPROXY_HTTP_LOG_FMT but for HTTPS log
+    format as defined in section 8.2.4 "HTTPS log format".
+
+  * HAPROXY_TCP_LOG_FMT: similar to HAPROXY_HTTP_LOG_FMT but for TCP log format
+    as defined in section 8.2.2 "TCP log format".
+
+  * HAPROXY_TCP_CLF_LOG_FMT: similar to HAPROXY_HTTP_CLF_LOG_FMT but for TCP
+    CLF log format as defined in section 8.2.2 "TCP log format".
+
+  * HAPROXY_MWORKER: In master-worker mode, this variable is set to 1.
+
+  * HAPROXY_CLI: configured listeners addresses of the stats socket of every
+    processe, these addresses are separated by semicolons.
+
+  * HAPROXY_MASTER_CLI: In master-worker mode, listeners addresses of the master
+    CLI, separated by semicolons.
+
+  * HAPROXY_STARTUP_VERSION: contains the version used to start, in master-
+    worker mode this is the version which was used to start the master, even
+    after updating the binary and reloading.
+
+  * HAPROXY_BRANCH: contains the HAProxy branch version (such as "2.8"). It
+    does not contain the full version number. It can be useful in case of
+    migration if resources (such as maps or certificates) are in a path
+    containing the branch number.
 
 In addition, some pseudo-variables are internally resolved and may be used as
 regular variables. Pseudo-variables always start with a dot ('.'), and are the
 only ones where the dot is permitted. The current list of pseudo-variables is:
 
-* .FILE: the name of the configuration file currently being parsed.
+  * .FILE: the name of the configuration file currently being parsed.
 
-* .LINE: the line number of the configuration file currently being parsed,
-  starting at one.
+  * .LINE: the line number of the configuration file currently being parsed,
+    starting at one.
 
-* .SECTION: the name of the section currently being parsed, or its type if the
-  section doesn't have a name (e.g. "global"), or an empty string before the
-  first section.
+  * .SECTION: the name of the section currently being parsed, or its type if
+    the section doesn't have a name (e.g. "global"), or an empty string before
+    the first section.
 
 These variables are resolved at the location where they are parsed. For example
 if a ".LINE" variable is used in a "log-format" directive located in a defaults
@@ -985,8 +1075,6 @@ proxies.
 This way it is possible to emit information to help locate a rule in variables,
 logs, error statuses, health checks, header values, or even to use line numbers
 to name some config objects like servers for example.
-
-See also "external-check command" for other variables.
 
 
 2.4. Conditional blocks
@@ -1036,6 +1124,54 @@ expression made of any combination of:
   - expressions combined with a logical OR ('||'), which will be evaluated
     from right to left until one returns true
 
+The same line tokenizer and argument parser are used as for the rest of the
+configuration language. Words are split around consecutive series of one or
+more unquoted spaces or tabs, and are reassembled together using a single space
+to delimit them before evaluation, in order to save the user from having to
+quote the entire line. But this also means that spaces surrounding commas or
+parenthesis are definitely part of the value, which is not always expected.
+For example, the expression below:
+
+   .if defined( HAPROXY_MWORKER )
+
+will test for the existence of variable " HAPROXY_MWORKER " (with spaces),
+and this one:
+
+   .if streq("$ENABLE_SSL",     1)
+
+will compare the environment variable "ENABLE_SSL" to the value " 1" (with a
+single leading space). The reason is the line is first split into words like
+this:
+
+   .if streq("$ENABLE_SSL",     1)
+  |---|--------------------|   |--|
+    1           2               3
+
+then the weak quoting is applied and environment variable "$ENABLE_SSL" is
+resolved (let's say for example that ENABLE_SSL=0), and finally the words are
+reassembled into a single string by placing a single space between the words:
+
+   .if streq(0, 1)
+  |---|-------|--|
+    1     2     3
+
+and only then it is parsed as a single expression. The space that was inserted
+between the comma and "1" is still part of the argument value, making this
+argument " 1":
+
+   .if streq(0, 1)
+  |---|-----|-|--|
+    \    \    \  \_ argument2: " 1"
+     \    \    \___ argument1: "0"
+      \    \_______ function: "streq"
+       \___________ directive: ".if"
+
+It's visible here that even if ENABLE_SSL had been equal to "1", it wouldn't
+have matched " 1" since the string would differ by one space.
+
+Note: as explained in section "2.2. Quoting and escaping", a good rule of thumb
+      is to never insert unneeded spaces inside expressions.
+
 Note that like in other languages, the AND operator has precedence over the OR
 operator, so that "A && B || C && D" evalues as "(A && B) || (C && D)".
 
@@ -1050,7 +1186,8 @@ The list of currently supported predicates is the following:
 
   - streq(<str1>,<str2>)  : returns true only if the two strings are equal
   - strneq(<str1>,<str2>) : returns true only if the two strings differ
-  - strstr(<str1>,<str2>) : returns true only if the second string is found in the first one
+  - strstr(<str1>,<str2>) : returns true only if the second string is found in
+                            the first one.
 
   - version_atleast(<ver>): returns true if the current haproxy version is
                             at least as recent as <ver> otherwise false. The
@@ -1070,11 +1207,40 @@ The list of currently supported predicates is the following:
 
 Example:
 
+   # 1. HAPROXY_MWORKER variable is set automatically by HAProxy in master and
+   # in worker process environments (see HAProxy variables matrix from
+   # 2.3. Environment variables). Its presence enables an additional listener.
+
+   global
+     master-worker
+
    .if defined(HAPROXY_MWORKER)
        listen mwcli_px
           bind :1111
           ...
    .endif
+
+   # 2. HAPROXY_BRANCH is set automatically by HAProxy in master and in worker
+   # process environments (see HAProxy variables matrix from 2.3. Environment
+   # variables). We check HAPROXY_BRANCH value and conditionally enable
+   # mworker-max-reloads parameter.
+
+   global
+     master-worker
+
+   .if streq("$HAPROXY_BRANCH",3.1)
+        mworker-max-reloads 5
+   .endif
+
+   # 3. Some arbitrary environment variables are set by user in the global
+   # section. If HAProxy is started in master-worker mode, they are presented in
+   # master and in worker process environments. We check values of these
+   # variables and conditionally enable ports 80 and 443. Environment variables
+   # checks can be mixed with features and version checks.
+
+   global
+     setenv WITH_SSL yes
+     unsetenv SSL_ONLY
 
    .if strneq("$SSL_ONLY",yes)
           bind :80
@@ -3621,15 +3787,22 @@ tune.http.logurilen <number>
   The default value is 1024.
 
 tune.http.maxhdr <number>
-  Sets the maximum number of headers in a request. When a request comes with a
-  number of headers greater than this value (including the first line), it is
-  rejected with a "400 Bad Request" status code. Similarly, too large responses
-  are blocked with "502 Bad Gateway". The default value is 101, which is enough
-  for all usages, considering that the widely deployed Apache server uses the
-  same limit. It can be useful to push this limit further to temporarily allow
-  a buggy application to work by the time it gets fixed. The accepted range is
-  1..32767. Keep in mind that each new header consumes 32bits of memory for
-  each stream, so don't push this limit too high.
+  Sets the maximum number of headers allowed in received HTTP messages. When a
+  message comes with a number of headers greater than this value (including the
+  first line), it is rejected with a "400 Bad Request" status code for a
+  request, or "502 Bad Gateway" for a response. The default value is 101, which
+  is enough for all usages, considering that the widely deployed Apache server
+  uses the same limit. It can be useful to push this limit further to
+  temporarily allow a buggy application to work by the time it gets fixed. The
+  accepted range is 1..32767. Keep in mind that each new header consumes 32bits
+  of memory for each stream, so don't push this limit too high.
+
+  Note that HTTP/1.1 is a text protocol, so there is no special limit when the
+  message is sent. The limit during the message parsing is sufficient. HTTP/2
+  and HTTP/3 are binary protocols and require an encoding step. A limit is set
+  too when headers are encoded to comply to limitation imposed by the
+  protocols. This limit is large enough but not documented on purpose. The same
+  limit is applied on the first steps of the decoding for the same reason.
 
 tune.idle-pool.shared { on | off }
   Enables ('on') or disables ('off') sharing of idle connection pools between
@@ -11222,8 +11395,6 @@ external-check command <command>
     PATH                    The PATH environment variable used when executing
                             the command may be set using "external-check path".
 
-  See also "2.3. Environment variables" for other variables.
-
   If the command executed and exits with a zero status then the check is
   considered to have passed, otherwise the check is considered to have
   failed.
@@ -17035,7 +17206,7 @@ proto <name>
   instance, it is possible to force the http/2 on clear TCP by specifying "proto
   h2" on the bind line.
 
-quic-cc-algo { cubic[-pacing] | newreno | nocc }[(<args,...>)]
+quic-cc-algo { cubic[-pacing] | newreno | bbr | nocc }[(<args,...>)]
   This is a QUIC specific setting to select the congestion control algorithm
   for any connection attempts to the configured QUIC listeners. They are similar
   to those used by TCP.
@@ -17048,7 +17219,10 @@ quic-cc-algo { cubic[-pacing] | newreno | nocc }[(<args,...>)]
   scenario, it can significantly improve network throughput. However, it can
   also increase CPU usage if haproxy is forced to wait too long between each
   emission. Pacing support is still experimental, as such it requires
-  "expose-experimental-directives".
+  "expose-experimental-directives". BBR congestion control algorithm depends on
+  the pacing support which is in this case implicitely activated by "bbr".
+  Note that BBR haproxy implementation is still considered as experimental and
+  cannot be enabled without "expose-experimental-directives".
 
   For further customization, a list of parameters can be specified after the
   algorithm token. It must be written between parenthesis, separated by a comma
@@ -25132,7 +25306,7 @@ http_first_req                                     boolean
 method                                             integer
 path                                               string
 pathq                                              string
-query                                              string
+query([<options>])                                 string
 req.hdr_names([<delim>])                           string
 req.ver                                            string
 req_ver                                            string
@@ -25592,13 +25766,20 @@ pathq : string
   accept-unsafe-violations-in-http-request", then this fragment part will be
   accepted and will also appear in the path.
 
-query : string
+query([<options>]) : string
   This extracts the request's query string, which starts after the first
   question mark. If no question mark is present, this fetch returns nothing. If
   a question mark is present but nothing follows, it returns an empty string.
   This means it's possible to easily know whether a query string is present
   using the "found" matching method. This fetch is the complement of "path"
-  which stops before the question mark.
+  which stops before the question mark and of "query_string", which include the
+  question mark.
+
+  An optional parameter may be used to customize the return value. Following
+  options are supported:
+
+    - with_qm : Include the question mark at the beginning ot the query string,
+                if not empty.
 
 req.hdr_names([<delim>]) : string
   This builds a string made from the concatenation of all header names as they

@@ -56,7 +56,6 @@
 #   USE_DEVICEATLAS         : enable DeviceAtlas api.
 #   USE_51DEGREES           : enable third party device detection library from 51Degrees
 #   USE_WURFL               : enable WURFL detection library from Scientiamobile
-#   USE_SYSTEMD             : enable sd_notify() support.
 #   USE_OBSOLETE_LINKER     : use when the linker fails to emit __start_init/__stop_init
 #   USE_THREAD_DUMP         : use the more advanced thread state dump system. Automatic.
 #   USE_OT                  : enable the OpenTracing filter
@@ -135,7 +134,12 @@
 #   VTEST_PROGRAM  : location of the vtest program to run reg-tests.
 #   DEBUG_USE_ABORT: use abort() for program termination, see include/haproxy/bug.h for details
 
+#### Add -Werror when set to non-empty, and make Makefile stop on warnings.
+#### It must be declared before includes because it's used there.
+ERR =
+
 include include/make/verbose.mk
+include include/make/errors.mk
 include include/make/compiler.mk
 include include/make/options.mk
 
@@ -159,7 +163,7 @@ TARGET =
 CPU =
 ifneq ($(CPU),)
 ifneq ($(CPU),generic)
-$(warning Warning: the "CPU" variable was forced to "$(CPU)" but is no longer \
+$(call $(complain),the "CPU" variable was forced to "$(CPU)" but is no longer \
   used and will be ignored. For native builds, modern compilers generally     \
   prefer that the string "-march=native" is passed in CPU_CFLAGS or CFLAGS.   \
   For other CPU-specific options, please read suggestions in the INSTALL file.)
@@ -169,7 +173,7 @@ endif
 #### No longer used
 ARCH =
 ifneq ($(ARCH),)
-$(warning Warning: the "ARCH" variable was forced to "$(ARCH)" but is no \
+$(call $(complain),the "ARCH" variable was forced to "$(ARCH)" but is no \
   longer used and will be ignored. Please check the INSTALL file for other \
   options, but usually in order to pass arch-specific options, ARCH_FLAGS, \
   CFLAGS or LDFLAGS are preferred.)
@@ -187,16 +191,13 @@ OPT_CFLAGS = -O2
 #### No longer used
 DEBUG_CFLAGS =
 ifneq ($(DEBUG_CFLAGS),)
-$(warning Warning: DEBUG_CFLAGS was forced to "$(DEBUG_CFLAGS)" but is no     \
+$(call $(complain),DEBUG_CFLAGS was forced to "$(DEBUG_CFLAGS)" but is no     \
   longer used and will be ignored. If you have ported this build setting from \
   and older version, it is likely that you just want to pass these options    \
   to the CFLAGS variable. If you are passing some debugging-related options   \
   such as -g/-ggdb3/-pg etc, they can now be passed in ARCH_FLAGS at once for \
   both the compilation and linking stages.)
 endif
-
-#### Add -Werror when set to non-empty
-ERR =
 
 #### May be used to force running a specific set of reg-tests
 REG_TEST_FILES =
@@ -247,7 +248,7 @@ endif
 #### No longer used
 SMALL_OPTS =
 ifneq ($(SMALL_OPTS),)
-$(warning Warning: SMALL_OPTS was forced to "$(SMALL_OPTS)" but is no longer \
+$(call $(complain),SMALL_OPTS was forced to "$(SMALL_OPTS)" but is no longer \
   used and will be ignored. Please check if this setting are still relevant, \
   and move it either to DEFINE or to CFLAGS instead.)
 endif
@@ -340,7 +341,7 @@ use_opts = USE_EPOLL USE_KQUEUE USE_NETFILTER USE_POLL                        \
            USE_SSL USE_LUA USE_ACCEPT4 USE_CLOSEFROM USE_ZLIB USE_SLZ         \
            USE_CPU_AFFINITY USE_TFO USE_NS USE_DL USE_RT USE_LIBATOMIC        \
            USE_MATH USE_DEVICEATLAS USE_51DEGREES                             \
-           USE_WURFL USE_SYSTEMD USE_OBSOLETE_LINKER USE_PRCTL USE_PROCCTL    \
+           USE_WURFL USE_OBSOLETE_LINKER USE_PRCTL USE_PROCCTL                \
            USE_THREAD_DUMP USE_EVPORTS USE_OT USE_QUIC USE_PROMEX             \
            USE_MEMORY_PROFILING USE_SHM_OPEN                                  \
            USE_STATIC_PCRE USE_STATIC_PCRE2                                   \
@@ -381,7 +382,7 @@ ifeq ($(TARGET),linux-glibc)
     USE_POLL USE_TPROXY USE_LIBCRYPT USE_DL USE_RT USE_CRYPT_H USE_NETFILTER  \
     USE_CPU_AFFINITY USE_THREAD USE_EPOLL USE_LINUX_TPROXY USE_LINUX_CAP      \
     USE_ACCEPT4 USE_LINUX_SPLICE USE_PRCTL USE_THREAD_DUMP USE_NS USE_TFO     \
-    USE_GETADDRINFO USE_BACKTRACE USE_SHM_OPEN USE_SYSTEMD)
+    USE_GETADDRINFO USE_BACKTRACE USE_SHM_OPEN)
   INSTALL = install -v
 endif
 
@@ -640,20 +641,21 @@ endif
 
 ifneq ($(USE_QUIC:0=),)
 
-
-OPTIONS_OBJS += src/quic_rx.o src/mux_quic.o src/h3.o src/quic_tx.o	\
+OPTIONS_OBJS += src/mux_quic.o src/h3.o src/quic_rx.o src/quic_tx.o	\
                 src/quic_conn.o src/quic_frame.o src/quic_sock.o	\
-                src/quic_ssl.o src/quic_tls.o src/proto_quic.o		\
-                src/quic_trace.o src/quic_cli.o src/quic_tp.o		\
-                src/quic_cid.o src/quic_retransmit.o src/quic_retry.o	\
-                src/quic_loss.o src/quic_cc_cubic.o src/quic_stream.o	\
-                src/xprt_quic.o src/quic_ack.o src/hq_interop.o		\
-                src/quic_cc_newreno.o src/qmux_http.o			\
-                src/quic_cc_nocc.o src/qpack-dec.o src/quic_cc.o	\
-                src/cfgparse-quic.o src/qmux_trace.o src/qpack-enc.o	\
-                src/qpack-tbl.o src/h3_stats.o src/quic_stats.o		\
-                src/quic_fctl.o src/cbuf.o src/quic_rules.o         \
-                src/quic_token.o src/quic_pacing.o
+                src/quic_tls.o src/quic_ssl.o src/proto_quic.o		\
+                src/quic_cli.o src/quic_trace.o src/quic_tp.o		\
+                src/quic_cid.o src/quic_stream.o			\
+                src/quic_retransmit.o src/quic_loss.o			\
+                src/hq_interop.o src/quic_cc_cubic.o			\
+                src/quic_cc_bbr.o src/quic_retry.o			\
+                src/cfgparse-quic.o src/xprt_quic.o src/quic_token.o	\
+                src/quic_ack.o src/qpack-dec.o src/quic_cc_newreno.o	\
+                src/qmux_http.o src/qmux_trace.o src/quic_rules.o	\
+                src/quic_cc_nocc.o src/quic_cc.o src/quic_pacing.o	\
+                src/h3_stats.o src/quic_stats.o src/qpack-enc.o		\
+                src/qpack-tbl.o src/quic_cc_drs.o src/quic_fctl.o	\
+                src/cbuf.o
 endif
 
 ifneq ($(USE_QUIC_OPENSSL_COMPAT:0=),)
@@ -763,10 +765,6 @@ ifneq ($(USE_WURFL:0=),)
     WURFL_CFLAGS  += -DWURFL_HEADER_WITH_DETAILS
   endif
   WURFL_LDFLAGS    = $(if $(WURFL_LIB),-L$(WURFL_LIB)) -lwurfl
-endif
-
-ifneq ($(USE_SYSTEMD:0=),)
-  OPTIONS_OBJS    += src/systemd.o
 endif
 
 ifneq ($(USE_PCRE:0=)$(USE_STATIC_PCRE:0=)$(USE_PCRE_JIT:0=),)
@@ -938,7 +936,7 @@ all:
 	@echo
 	@exit 1
 else
-all: haproxy dev/flags/flags $(EXTRA)
+all: dev/flags/flags haproxy $(EXTRA)
 endif # obsolete targets
 endif # TARGET
 
@@ -948,47 +946,48 @@ ifneq ($(EXTRA_OBJS),)
   OBJS += $(EXTRA_OBJS)
 endif
 
-OBJS += src/mux_h2.o src/mux_h1.o src/mux_fcgi.o src/stream.o		\
-        src/log.o src/server.o src/tcpcheck.o src/http_ana.o		\
-        src/stick_table.o src/tools.o src/sample.o src/flt_spoe.o	\
-        src/cfgparse.o src/peers.o src/cli.o src/resolvers.o		\
-        src/connection.o src/backend.o src/cache.o src/http_htx.o	\
-        src/proxy.o src/stconn.o src/check.o src/haproxy.o		\
-        src/stats-html.o src/listener.o src/pattern.o src/debug.o	\
-        src/cfgparse-listen.o src/http_client.o src/activity.o		\
-        src/applet.o src/http_act.o src/http_fetch.o src/http_ext.o	\
-        src/dns.o src/vars.o src/tcp_rules.o src/pool.o src/stats.o	\
-        src/stats-proxy.o src/sink.o src/filters.o src/mux_pt.o		\
-        src/event_hdl.o src/server_state.o src/h1_htx.o src/h1.o	\
-        src/flt_http_comp.o src/task.o src/payload.o src/fcgi-app.o	\
-        src/map.o src/trace.o src/tcp_sample.o src/tcp_act.o		\
-        src/session.o src/htx.o src/cfgparse-global.o src/mjson.o	\
-        src/h2.o src/ring.o src/fd.o src/sock.o src/mworker.o		\
-        src/flt_trace.o src/thread.o src/proto_rhttp.o src/acl.o	\
-        src/http.o src/flt_bwlim.o src/channel.o src/queue.o		\
-        src/mqtt.o src/proto_tcp.o src/lb_chash.o src/http_rules.o	\
-        src/errors.o src/extcheck.o src/dns_ring.o src/stats-json.o	\
-        src/http_conv.o src/frontend.o src/proto_sockpair.o		\
-        src/compression.o src/ncbuf.o src/stats-file.o src/raw_sock.o	\
-        src/lb_fwrr.o src/action.o src/uri_normalizer.o src/buf.o	\
-        src/proto_uxst.o src/ebmbtree.o src/xprt_handshake.o		\
-        src/protocol.o src/proto_udp.o src/lb_fwlc.o src/sha1.o		\
-        src/proto_uxdg.o src/mailers.o src/lb_fas.o src/cfgcond.o	\
-        src/cfgdiag.o src/sock_unix.o src/sock_inet.o			\
-        src/mworker-prog.o src/lb_map.o src/ev_select.o src/shctx.o	\
-        src/hpack-dec.o src/fix.o src/clock.o src/cfgparse-tcp.o	\
-        src/arg.o src/signal.o src/fcgi.o src/dynbuf.o src/regex.o	\
-        src/lru.o src/lb_ss.o src/eb64tree.o src/chunk.o		\
-        src/cfgparse-unix.o src/guid.o src/ebimtree.o src/eb32tree.o	\
-        src/eb32sctree.o src/base64.o src/uri_auth.o src/time.o		\
-        src/hpack-tbl.o src/ebsttree.o src/ebistree.o src/auth.o	\
-        src/hpack-huff.o src/freq_ctr.o src/dict.o src/wdt.o		\
-        src/pipe.o src/init.o src/http_acl.o src/hpack-enc.o		\
-        src/cebu32_tree.o src/cebu64_tree.o src/cebua_tree.o		\
-        src/cebub_tree.o src/cebuib_tree.o src/cebuis_tree.o		\
-        src/cebul_tree.o src/cebus_tree.o				\
-        src/ebtree.o src/dgram.o src/hash.o src/version.o		\
-	 src/limits.o src/mux_spop.o
+OBJS += src/mux_h2.o src/mux_h1.o src/mux_fcgi.o src/log.o		\
+        src/server.o src/stream.o src/tcpcheck.o src/http_ana.o		\
+        src/stick_table.o src/tools.o src/mux_spop.o src/sample.o	\
+        src/activity.o src/cfgparse.o src/peers.o src/cli.o		\
+        src/backend.o src/connection.o src/resolvers.o src/proxy.o	\
+        src/cache.o src/stconn.o src/http_htx.o src/debug.o		\
+        src/check.o src/stats-html.o src/haproxy.o src/listener.o	\
+        src/applet.o src/pattern.o src/cfgparse-listen.o		\
+        src/flt_spoe.o src/cebuis_tree.o src/http_ext.o			\
+        src/http_act.o src/http_fetch.o src/cebus_tree.o		\
+        src/cebuib_tree.o src/http_client.o src/dns.o			\
+        src/cebub_tree.o src/vars.o src/event_hdl.o src/tcp_rules.o	\
+        src/trace.o src/stats-proxy.o src/pool.o src/stats.o		\
+        src/cfgparse-global.o src/filters.o src/mux_pt.o		\
+        src/flt_http_comp.o src/sock.o src/h1.o src/sink.o		\
+        src/cebua_tree.o src/session.o src/payload.o src/htx.o		\
+        src/cebul_tree.o src/cebu32_tree.o src/cebu64_tree.o		\
+        src/server_state.o src/proto_rhttp.o src/flt_trace.o src/fd.o	\
+        src/task.o src/map.o src/fcgi-app.o src/h2.o src/mworker.o	\
+        src/tcp_sample.o src/mjson.o src/h1_htx.o src/tcp_act.o		\
+        src/ring.o src/flt_bwlim.o src/acl.o src/thread.o src/queue.o	\
+        src/http_rules.o src/http.o src/channel.o src/proto_tcp.o	\
+        src/mqtt.o src/lb_chash.o src/extcheck.o src/dns_ring.o		\
+        src/errors.o src/ncbuf.o src/compression.o src/http_conv.o	\
+        src/frontend.o src/stats-json.o src/proto_sockpair.o		\
+        src/raw_sock.o src/action.o src/stats-file.o src/buf.o		\
+        src/xprt_handshake.o src/proto_uxst.o src/lb_fwrr.o		\
+        src/uri_normalizer.o src/mailers.o src/protocol.o		\
+        src/cfgcond.o src/proto_udp.o src/lb_fwlc.o src/ebmbtree.o	\
+        src/proto_uxdg.o src/cfgdiag.o src/sock_unix.o src/sha1.o	\
+        src/lb_fas.o src/clock.o src/sock_inet.o src/ev_select.o	\
+        src/lb_map.o src/shctx.o src/mworker-prog.o src/hpack-dec.o	\
+        src/arg.o src/signal.o src/fix.o src/dynbuf.o src/guid.o	\
+        src/cfgparse-tcp.o src/lb_ss.o src/chunk.o			\
+        src/cfgparse-unix.o src/regex.o src/fcgi.o src/uri_auth.o	\
+        src/eb64tree.o src/eb32tree.o src/eb32sctree.o src/lru.o	\
+        src/limits.o src/ebimtree.o src/wdt.o src/hpack-tbl.o		\
+        src/ebistree.o src/base64.o src/auth.o src/time.o		\
+        src/ebsttree.o src/freq_ctr.o src/systemd.o src/init.o		\
+        src/http_acl.o src/dict.o src/dgram.o src/pipe.o		\
+        src/hpack-huff.o src/hpack-enc.o src/ebtree.o src/hash.o	\
+        src/version.o
 
 ifneq ($(TRACE),)
   OBJS += src/calltrace.o

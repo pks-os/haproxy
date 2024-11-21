@@ -31,11 +31,13 @@
 
 #include <haproxy/buf-t.h>
 #include <haproxy/quic_loss-t.h>
+#include <haproxy/quic_tx-t.h>
 
 #define QUIC_CC_INFINITE_SSTHESH ((uint32_t)-1)
 
 extern struct quic_cc_algo quic_cc_algo_nr;
 extern struct quic_cc_algo quic_cc_algo_cubic;
+extern struct quic_cc_algo quic_cc_algo_bbr;
 extern struct quic_cc_algo *default_quic_cc_algo;
 
 /* Fake algorithm with its fixed window */
@@ -81,6 +83,7 @@ struct quic_cc_event {
 enum quic_cc_algo_type {
 	QUIC_CC_ALGO_TP_NEWRENO,
 	QUIC_CC_ALGO_TP_CUBIC,
+	QUIC_CC_ALGO_TP_BBR,
 	QUIC_CC_ALGO_TP_NOCC,
 };
 
@@ -88,7 +91,7 @@ struct quic_cc {
 	/* <conn> is there only for debugging purpose. */
 	struct quic_conn *qc;
 	struct quic_cc_algo *algo;
-	uint32_t priv[20];
+	uint32_t priv[158];
 };
 
 struct quic_cc_path {
@@ -99,6 +102,8 @@ struct quic_cc_path {
 
 	/* MTU. Must be constant for GSO support. */
 	const size_t mtu;
+	/* Initial congestion window. */
+	uint64_t initial_wnd;
 	/* Congestion window. */
 	uint64_t cwnd;
 	/* The current maximum congestion window value reached. */
@@ -115,6 +120,9 @@ struct quic_cc_path {
 	uint64_t ifae_pkts;
 	/* Burst size if pacing is used. Not used if congestion algo handle pacing itself. */
 	uint32_t pacing_burst;
+	uint64_t delivery_rate; /* bytes per second */
+	size_t send_quantum;
+	uint32_t recovery_start_ts;
 };
 
 struct quic_cc_algo {
@@ -129,6 +137,16 @@ struct quic_cc_algo {
 	/* Defined only if pacing is used. */
 	uint (*pacing_rate)(const struct quic_cc *cc);
 	uint (*pacing_burst)(const struct quic_cc *cc);
+
+	struct quic_cc_drs *(*get_drs)(struct quic_cc *cc);
+	void (*on_transmit)(struct quic_cc *cc);
+	void (*drs_on_transmit)(struct quic_cc *cc, struct quic_tx_packet *pkt);
+	void (*on_ack_rcvd)(struct quic_cc *cc, uint32_t acked, uint32_t delivered,
+	                    uint32_t ack_rtt, uint32_t bytes_lost,
+	                    unsigned int largest_pkt_sent_ts);
+	void (*on_pkt_lost)(struct quic_cc *cc,
+	                    struct quic_tx_packet *pkt, uint32_t lost_bytes);
+	void (*congestion_event)(struct quic_cc *cc, uint32_t ts);
 };
 
 #endif /* USE_QUIC */
