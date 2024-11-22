@@ -5536,7 +5536,9 @@ const void *resolve_sym_name(struct buffer *buf, const char *pfx, const void *ad
 	};
 
 #if (defined(__ELF__) && !defined(__linux__)) || defined(USE_DL)
-	Dl_info dli, dli_main;
+	static Dl_info dli_main;
+	static int dli_main_done; // 0 = not resolved, 1 = resolve in progress, 2 = done
+	Dl_info dli;
 	size_t size;
 	const char *fname, *p;
 #endif
@@ -5561,8 +5563,21 @@ const void *resolve_sym_name(struct buffer *buf, const char *pfx, const void *ad
 	 * that contains the main function. The name is picked between last '/'
 	 * and first following '.'.
 	 */
-	if (!dladdr(main, &dli_main))
-		dli_main.dli_fbase = NULL;
+
+	/* let's check main only once, no need to do it all the time */
+
+	i = HA_ATOMIC_LOAD(&dli_main_done);
+	while (i < 2) {
+		i = 0;
+		if (HA_ATOMIC_CAS(&dli_main_done, &i, 1)) {
+			/* we're the first ones, resolve it */
+			if (!dladdr(main, &dli_main))
+				dli_main.dli_fbase = NULL;
+			HA_ATOMIC_STORE(&dli_main_done, 2); // done
+			break;
+		}
+		ha_thread_relax();
+	}
 
 	if (dli_main.dli_fbase != dli.dli_fbase) {
 		fname = dli.dli_fname;
@@ -5599,6 +5614,48 @@ const void *resolve_sym_name(struct buffer *buf, const char *pfx, const void *ad
 		chunk_appendf(buf, "main-%#lx", (long)((void*)main - addr));
 	else
 		chunk_appendf(buf, "main+%#lx", (long)(addr - (void*)main));
+	return NULL;
+}
+
+/* Tries to append to buffer <buf> the DSO name containing the symbol at address
+ * <addr>. The name (lib or executable) is limited to what lies between the last
+ * '/' and the first following '.'. An optional prefix <pfx> is prepended before
+ * the output if not null. It returns "*unknown*" when the symbol is not found.
+ *
+ * The symbol's address is returned, or NULL when unresolved, in order to allow
+ * the caller to match it against known ones.
+ */
+const void *resolve_dso_name(struct buffer *buf, const char *pfx, const void *addr)
+{
+#if (defined(__ELF__) && !defined(__linux__)) || defined(USE_DL)
+	Dl_info dli;
+	size_t size;
+	const char *fname, *p;
+
+	/* Now let's try to be smarter */
+	if (!dladdr_and_size(addr, &dli, &size))
+		goto unknown;
+
+	if (pfx) {
+		chunk_appendf(buf, "%s", pfx);
+		pfx = NULL;
+	}
+
+	/* keep the part between '/' and '.' */
+	fname = dli.dli_fname;
+	p = strrchr(fname, '/');
+	if (p++)
+		fname = p;
+	p = strchr(fname, '.');
+	if (!p)
+		p = fname + strlen(fname);
+	chunk_appendf(buf, "%.*s", (int)(long)(p - fname), fname);
+	return addr;
+ unknown:
+#endif /* __ELF__ && !__linux__ || USE_DL */
+
+	/* unknown symbol */
+	chunk_appendf(buf, "%s*unknown*", pfx ? pfx : "");
 	return NULL;
 }
 

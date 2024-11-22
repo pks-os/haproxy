@@ -38,10 +38,10 @@ static const char *common_kw_list[] = {
 	"external-check", "user", "group", "maxconn",
 	"ssl-server-verify", "maxconnrate", "maxsessrate", "maxsslrate",
 	"maxcomprate", "maxpipes", "maxzlibmem", "maxcompcpuusage", "ulimit-n",
-	"chroot", "description", "node", "unix-bind", "log",
+	"description", "node", "unix-bind", "log",
 	"log-send-hostname", "server-state-base", "server-state-file",
 	"log-tag", "spread-checks", "max-spread-checks", "cpu-map",
-	"strict-limits", "localpeer",
+	"strict-limits",
 	"numa-cpu-mapping", "defaults", "listen", "frontend", "backend",
 	"peers", "resolvers", "cluster-secret", "no-quic", "limited-quic",
 	"stats-file",
@@ -427,21 +427,6 @@ int cfg_parse_global(const char *file, int linenum, char **args, int kwm)
 		}
 		global.rlimit_nofile = atol(args[1]);
 	}
-	else if (strcmp(args[0], "chroot") == 0) {
-		if (alertif_too_many_args(1, file, linenum, args, &err_code))
-			goto out;
-		if (global.chroot != NULL) {
-			ha_alert("parsing [%s:%d] : '%s' already specified. Continuing.\n", file, linenum, args[0]);
-			err_code |= ERR_ALERT;
-			goto out;
-		}
-		if (*(args[1]) == 0) {
-			ha_alert("parsing [%s:%d] : '%s' expects a directory as an argument.\n", file, linenum, args[0]);
-			err_code |= ERR_ALERT | ERR_FATAL;
-			goto out;
-		}
-		global.chroot = strdup(args[1]);
-	}
 	else if (strcmp(args[0], "description") == 0) {
 		int i, len=0;
 		char *d;
@@ -812,39 +797,6 @@ int cfg_parse_global(const char *file, int linenum, char **args, int kwm)
 			goto out;
 		if (kwm == KWM_NO)
 			global.tune.options &= ~GTUNE_STRICT_LIMITS;
-	}
-	else if (strcmp(args[0], "localpeer") == 0) {
-		if (alertif_too_many_args(1, file, linenum, args, &err_code))
-			goto out;
-
-		if (*(args[1]) == 0) {
-			ha_alert("parsing [%s:%d] : '%s' expects a name as an argument.\n",
-			         file, linenum, args[0]);
-			err_code |= ERR_ALERT | ERR_FATAL;
-			goto out;
-		}
-
-		if (global.localpeer_cmdline != 0) {
-			ha_warning("parsing [%s:%d] : '%s' ignored since it is already set by using the '-L' "
-			           "command line argument.\n", file, linenum, args[0]);
-			err_code |= ERR_WARN;
-			goto out;
-		}
-
-		if (cfg_peers) {
-			ha_warning("parsing [%s:%d] : '%s' ignored since it is used after 'peers' section.\n",
-			           file, linenum, args[0]);
-			err_code |= ERR_WARN;
-			goto out;
-		}
-
-		free(localpeer);
-		if ((localpeer = strdup(args[1])) == NULL) {
-			ha_alert("parsing [%s:%d]: cannot allocate memory for '%s'.\n",
-			         file, linenum, args[0]);
-			err_code |= ERR_ALERT | ERR_FATAL;
-			goto out;
-		}
 	}
 	else if (strcmp(args[0], "numa-cpu-mapping") == 0) {
 		global.numa_cpu_mapping = (kwm == KWM_NO) ? 0 : 1;
@@ -1618,6 +1570,78 @@ static int cfg_parse_tune_renice(char **args, int section_type, struct proxy *cu
 	return 0;
 }
 
+static int cfg_parse_global_chroot(char **args, int section_type, struct proxy *curpx,
+				   const struct proxy *defpx, const char *file, int line,
+				   char **err)
+{
+	struct stat dir_stat;
+
+	if (too_many_args(1, args, err, NULL))
+		return -1;
+
+	if (global.chroot != NULL) {
+		memprintf(err, "'%s' is already specified. Continuing.\n", args[0]);
+		return 1;
+	}
+	if (*(args[1]) == 0) {
+		memprintf(err, "'%s' expects a directory as an argument.\n", args[0]);
+		return -1;
+	}
+	global.chroot = strdup(args[1]);
+
+	/* some additional test for chroot dir, warn messages might be
+	 * handy to catch misconfiguration errors more quickly
+	 */
+	if (stat(args[1], &dir_stat) != 0) {
+		if (errno == ENOENT)
+			ha_diag_warning("parsing [%s:%d]: '%s': '%s': %s.\n",
+					file, line, args[0], args[1], strerror(errno));
+		else if (errno == EACCES)
+			ha_diag_warning("parsing [%s:%d]: '%s': '%s': %s "
+					"(process is need to be started with root priviledges to be able to chroot).\n",
+					file, line, args[0], args[1], strerror(errno));
+		else
+			ha_diag_warning("parsing [%s:%d]: '%s': '%s': stat() is failed: %s.\n",
+					file, line, args[0], args[1], strerror(errno));
+	} else if ((dir_stat.st_mode & S_IFMT) != S_IFDIR) {
+		ha_diag_warning("parsing [%s:%d]: '%s': '%s' is not a directory.\n",
+				file, line, args[0], args[1]);
+	}
+
+	return 0;
+}
+
+static int cfg_parse_global_localpeer(char **args, int section_type, struct proxy *curpx,
+				      const struct proxy *defpx, const char *file, int line,
+				      char **err)
+{
+	if (!(global.mode & MODE_DISCOVERY))
+		return 0;
+
+	if (too_many_args(1, args, err, NULL))
+		return -1;
+
+	if (*(args[1]) == 0) {
+		memprintf(err, "'%s' expects a name as an argument.\n", args[0]);
+		return -1;
+	}
+
+	if (global.localpeer_cmdline != 0) {
+		memprintf(err, "'%s' ignored since it is already set by using the '-L' "
+			 "command line argument.\n", args[0]);
+		return -1;
+	}
+
+	free(localpeer);
+	localpeer = strdup(args[1]);
+	if (localpeer == NULL) {
+		memprintf(err, "cannot allocate memory for '%s'.\n", args[0]);
+		return -1;
+	}
+
+	return 0;
+}
+
 static struct cfg_kw_list cfg_kws = {ILH, {
 	{ CFG_GLOBAL, "prealloc-fd", cfg_parse_prealloc_fd },
 	{ CFG_GLOBAL, "force-cfg-parser-pause", cfg_parse_global_parser_pause, KWF_EXPERIMENTAL },
@@ -1661,6 +1685,8 @@ static struct cfg_kw_list cfg_kws = {ILH, {
 	{ CFG_GLOBAL, "unsetenv", cfg_parse_global_env_opts, KWF_DISCOVERY },
 	{ CFG_GLOBAL, "resetenv", cfg_parse_global_env_opts, KWF_DISCOVERY },
 	{ CFG_GLOBAL, "presetenv", cfg_parse_global_env_opts, KWF_DISCOVERY },
+	{ CFG_GLOBAL, "chroot", cfg_parse_global_chroot },
+	{ CFG_GLOBAL, "localpeer", cfg_parse_global_localpeer, KWF_DISCOVERY },
 	{ 0, NULL, NULL },
 }};
 

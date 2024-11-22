@@ -1370,13 +1370,16 @@ static void bbr_handle_lost_packet(struct bbr *bbr, struct quic_cc_path *p,
                                    struct quic_tx_packet *pkt,
                                    uint32_t lost)
 {
-	struct quic_cc_rs rs = {0};
+	struct quic_cc_rs rs;
 
 	/* C.delivered = bbr->drs.delivered */
 	bbr_note_loss(bbr, bbr->drs.delivered);
 	if (!bbr->bw_probe_samples)
 		return; /* not a packet sent while probing bandwidth */
 
+	/* Only ->tx_in_fligth, ->lost and ->is_app_limited <rs> member
+	 * initializations are needed.
+	 */
 	rs.tx_in_flight = pkt->rs.tx_in_flight; /* inflight at transmit */
 	BUG_ON(bbr->drs.lost + pkt->len < lost);
 	/* bbr->rst->lost is not yet incremented */
@@ -1478,6 +1481,23 @@ uint bbr_pacing_burst(const struct quic_cc *cc)
 	return p->send_quantum / p->mtu;
 }
 
+/* Update the delivery rate sampling state about the application limitation. */
+static void bbr_check_app_limited(const struct quic_cc *cc, int sent)
+{
+	struct bbr *bbr = quic_cc_priv(cc);
+	struct quic_cc_drs *drs = &bbr->drs;
+	struct quic_cc_path *p = container_of(cc, struct quic_cc_path, cc);
+
+	if (p->in_flight >= p->cwnd) {
+		drs->is_cwnd_limited = 1;
+	}
+	else if (!sent) {
+		drs->app_limited = drs->delivered + p->in_flight;
+		if (!drs->app_limited)
+			drs->app_limited = p->mtu;
+	}
+}
+
 static inline const char *bbr_state_str(struct bbr *bbr)
 {
 	switch (bbr->state) {
@@ -1522,6 +1542,7 @@ struct quic_cc_algo quic_cc_algo_bbr = {
 	.on_ack_rcvd = bbr_update_on_ack,
 	.congestion_event = bbr_congestion_event,
 	.on_pkt_lost = bbr_update_on_loss,
+	.check_app_limited = bbr_check_app_limited,
 	.state_cli   = bbr_state_cli,
 };
 

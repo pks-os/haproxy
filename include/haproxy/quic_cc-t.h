@@ -125,8 +125,13 @@ struct quic_cc_path {
 	uint32_t recovery_start_ts;
 };
 
+/* pacing can be optionnaly activated on top of the algorithm */
+#define QUIC_CC_ALGO_FL_OPT_PACING           0x01
+
 struct quic_cc_algo {
 	enum quic_cc_algo_type type;
+	int flags; /* QUIC_CC_ALGO_FL_* */
+
 	int (*init)(struct quic_cc *cc);
 	void (*event)(struct quic_cc *cc, struct quic_cc_event *ev);
 	void (*slow_start)(struct quic_cc *cc);
@@ -147,6 +152,7 @@ struct quic_cc_algo {
 	void (*on_pkt_lost)(struct quic_cc *cc,
 	                    struct quic_tx_packet *pkt, uint32_t lost_bytes);
 	void (*congestion_event)(struct quic_cc *cc, uint32_t ts);
+	void (*check_app_limited)(const struct quic_cc *cc, int sent);
 };
 
 #endif /* USE_QUIC */
