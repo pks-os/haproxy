@@ -51,6 +51,8 @@ extern unsigned char boot_seed[20];  // per-boot random seed (160 bits initially
 extern THREAD_LOCAL struct buffer trash;
 extern char **init_env;
 extern char *progname;
+extern char **old_argv;
+extern const char *old_unixsocket;
 
 struct proxy;
 struct server;
@@ -58,6 +60,7 @@ int main(int argc, char **argv);
 void deinit(void);
 __attribute__((noreturn)) void deinit_and_exit(int);
 void run_poll_loop(void);
+void *run_thread_poll_loop(void *data); /* takes the thread config in argument or NULL for any thread */
 int tell_old_pids(int sig);
 int delete_oldpid(int pid);
 void hap_register_build_opts(const char *str, int must_free);
@@ -67,8 +70,6 @@ int compare_current_version(const char *version);
 void display_version();
 
 void mworker_accept_wrapper(int fd);
-void mworker_reload(int hardreload);
-void on_new_child_failure(void);
 
 /* to be used with warned and WARN_* */
 static inline int already_warned(unsigned int warning)

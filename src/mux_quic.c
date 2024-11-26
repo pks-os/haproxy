@@ -2996,6 +2996,7 @@ static int qmux_init(struct connection *conn, struct proxy *prx,
 
 	qcc->wait_event.tasklet->process = qcc_io_cb;
 	qcc->wait_event.tasklet->context = qcc;
+	qcc->wait_event.tasklet->state  |= TASK_F_WANTS_TIME;
 	qcc->wait_event.events = 0;
 
 	qcc->proxy = prx;
@@ -3619,7 +3620,7 @@ void qcc_show_quic(struct qcc *qcc)
 		if (!quic_stream_is_uni(qcs->id) || !quic_stream_is_remote(qcc, qcs->id))
 			chunk_appendf(&trash, " txoff=%llu(%llu) msd=%llu",
 			              (ullong)qcs->tx.fc.off_real,
-			              (ullong)qcs->tx.fc.off_soft - (ullong)qcs->tx.fc.off_soft,
+			              (ullong)qcs->tx.fc.off_soft - (ullong)qcs->tx.fc.off_real,
 			              (ullong)qcs->tx.fc.limit);
 		chunk_appendf(&trash, "\n");
 		node = eb64_next(node);
