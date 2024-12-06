@@ -2449,6 +2449,10 @@ static int qcc_io_send(struct qcc *qcc)
 		/* Deallocate frames that the transport layer has rejected. */
 		qcc_tx_frms_free(qcc);
 	}
+	else {
+		/* Everything sent */
+		HA_ATOMIC_AND(&qcc->wait_event.tasklet->state, ~TASK_F_USR1);
+	}
 
 	/* Re-insert on-error QCS at the end of the send-list. */
 	if (!LIST_ISEMPTY(&qcs_failed)) {
@@ -2823,8 +2827,13 @@ static void qcc_purge_sending(struct qcc *qcc)
 		qcc_subscribe_send(qcc);
 	}
 	else {
-		if (!LIST_ISEMPTY(frms))
+		if (!LIST_ISEMPTY(frms)) {
 			qcc_subscribe_send(qcc);
+		}
+		else {
+			/* Everything sent */
+			HA_ATOMIC_AND(&qcc->wait_event.tasklet->state, ~TASK_F_USR1);
+		}
 	}
 }
 
@@ -3376,12 +3385,14 @@ static size_t qmux_strm_done_ff(struct stconn *sc)
 		goto end;
 	}
 
-	if (data)
-		data += sd->iobuf.offset;
 	total = qcs->qcc->app_ops->done_ff(qcs);
+	if (total || qcs->flags & QC_SF_FIN_STREAM)
+		qcc_send_stream(qcs, 0, total);
 
-	if (data || qcs->flags & QC_SF_FIN_STREAM)
-		qcc_send_stream(qcs, 0, data);
+	/* Reset stconn iobuf information. */
+	qcs->sd->iobuf.buf = NULL;
+	qcs->sd->iobuf.offset = 0;
+	qcs->sd->iobuf.data = 0;
 
 	/* Similar to snd_buf callback. */
 	if (!(qcs->qcc->wait_event.events & SUB_RETRY_SEND))
@@ -3391,7 +3402,7 @@ static size_t qmux_strm_done_ff(struct stconn *sc)
 
   end:
 	TRACE_LEAVE(QMUX_EV_STRM_SEND, qcs->qcc->conn, qcs);
-	return total;
+	return data;
 }
 
 static int qmux_strm_resume_ff(struct stconn *sc, unsigned int flags)
