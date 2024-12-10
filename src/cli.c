@@ -2494,6 +2494,7 @@ static int _send_status(char **args, char *payload, struct appctx *appctx, void 
 {
 	struct listener *mproxy_li;
 	struct mworker_proc *proc;
+	char *msg = "READY\n";
 	int pid;
 
 	BUG_ON((strcmp(args[0], "_send_status") != 0),
@@ -2537,11 +2538,32 @@ static int _send_status(char **args, char *payload, struct appctx *appctx, void 
 		nb_oldpids = tell_old_pids(oldpids_sig);
 	}
 
+	if (daemon_fd[1] != -1) {
+		if (write(daemon_fd[1], msg, strlen(msg)) < 0) {
+			ha_alert("[%s.main()] Failed to write into pipe with parent process: %s\n", progname, strerror(errno));
+			exit(1);
+		}
+		close(daemon_fd[1]);
+		daemon_fd[1] = -1;
+	}
+
 	load_status = 1;
 	ha_notice("Loading success.\n");
 
 	if (global.tune.options & GTUNE_USE_SYSTEMD)
 		sd_notifyf(0, "READY=1\nMAINPID=%lu\nSTATUS=Ready.\n", (unsigned long)getpid());
+
+	/* master and worker have successfully started, now we can set quiet mode
+	 * if MODE_DAEMON
+	 */
+	if ((!(global.mode & MODE_QUIET) || (global.mode & MODE_VERBOSE)) &&
+		(global.mode & MODE_DAEMON)) {
+		/* detach from the tty, this is required to properly daemonize. */
+		if ((getenv("HAPROXY_MWORKER_REEXEC") == NULL))
+			stdio_quiet(-1);
+		global.mode &= ~MODE_VERBOSE;
+		global.mode |= MODE_QUIET; /* ensure that we won't say anything from now */
+	}
 
 	return 1;
 }

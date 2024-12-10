@@ -53,6 +53,7 @@ extern char **init_env;
 extern char *progname;
 extern char **old_argv;
 extern const char *old_unixsocket;
+extern int daemon_fd[2];
 
 struct proxy;
 struct server;
@@ -69,6 +70,7 @@ int split_version(const char *version, unsigned int *value);
 int compare_current_version(const char *version);
 void display_version();
 int handle_pidfile(void);
+void stdio_quiet(int fd);
 
 void mworker_accept_wrapper(int fd);
 
