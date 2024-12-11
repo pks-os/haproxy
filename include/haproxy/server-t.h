@@ -303,7 +303,6 @@ struct server {
 	unsigned int pp_opts;                   /* proxy protocol options (SRV_PP_*) */
 	struct mt_list global_list;             /* attach point in the global servers_list */
 	struct server *next;
-	struct mt_list prev_deleted;            /* deleted servers with 'next' ptr pointing to us */
 	int cklen;				/* the len of the cookie, to speed up checks */
 	int rdr_len;				/* the length of the redirection prefix */
 	char *cookie;				/* the id set in the cookie */
@@ -350,6 +349,7 @@ struct server {
 	enum srv_ws_mode ws;                    /* configure the protocol selection for websocket */
 	/* 3 bytes hole here */
 
+	struct mt_list watcher_list;		/* list of elems which currently references this server instance */
 	uint refcount;                          /* refcount used to remove a server at runtime */
 
 	/* The elements below may be changed on every single request by any

@@ -2966,7 +2966,6 @@ struct server *new_server(struct proxy *proxy)
 	LIST_INIT(&srv->srv_rec_item);
 	LIST_INIT(&srv->ip_rec_item);
 	LIST_INIT(&srv->pp_tlvs);
-	MT_LIST_INIT(&srv->prev_deleted);
 	event_hdl_sub_list_init(&srv->e_subs);
 	srv->rid = 0; /* rid defaults to 0 */
 
@@ -2988,6 +2987,7 @@ struct server *new_server(struct proxy *proxy)
 	MT_LIST_INIT(&srv->sess_conns);
 
 	guid_init(&srv->guid);
+	MT_LIST_INIT(&srv->watcher_list);
 
 	srv->extra_counters = NULL;
 #ifdef USE_OPENSSL
@@ -3072,13 +3072,6 @@ struct server *srv_drop(struct server *srv)
 	//       srv->conf.name.node.leaf_p);
 
 	guid_remove(&srv->guid);
-
-	/* make sure we are removed from our 'next->prev_deleted' list
-	 * This doesn't require full thread isolation as we're using mt lists
-	 * However this could easily be turned into regular list if required
-	 * (with the proper use of thread isolation)
-	 */
-	MT_LIST_DELETE(&srv->prev_deleted);
 
 	task_destroy(srv->warmup);
 	task_destroy(srv->srvrq_check);
@@ -6072,10 +6065,10 @@ static int cli_parse_delete_server(char **args, char *payload, struct appctx *ap
 {
 	struct proxy *be;
 	struct server *srv;
-	struct server *prev_del;
 	struct ist be_name, sv_name;
 	struct mt_list back;
 	struct sess_priv_conns *sess_conns = NULL;
+	struct watcher *srv_watch;
 	const char *msg;
 	int ret, i;
 
@@ -6177,31 +6170,17 @@ static int cli_parse_delete_server(char **args, char *payload, struct appctx *ap
 	if (srv->agent.state & CHK_ST_CONFIGURED)
 		check_purge(&srv->agent);
 
+	while (!MT_LIST_ISEMPTY(&srv->watcher_list)) {
+		srv_watch = MT_LIST_NEXT(&srv->watcher_list, struct watcher *, el);
+		BUG_ON(srv->next && srv->next->flags & SRV_F_DELETED);
+		watcher_next(srv_watch, srv->next);
+	}
+
 	/* detach the server from the proxy linked list
 	 * The proxy servers list is currently not protected by a lock, so this
 	 * requires thread_isolate/release.
 	 */
 	_srv_detach(srv);
-
-	/* Some deleted servers could still point to us using their 'next',
-	 * migrate them as needed
-	 */
-	MT_LIST_FOR_EACH_ENTRY_LOCKED(prev_del, &srv->prev_deleted, prev_deleted, back) {
-		/* update its 'next' ptr */
-		prev_del->next = srv->next;
-		if (srv->next) {
-			/* now it is our 'next' responsibility */
-			MT_LIST_APPEND(&srv->next->prev_deleted, &prev_del->prev_deleted);
-		}
-		else
-			mt_list_unlock_self(&prev_del->prev_deleted);
-		/* unlink from our list */
-		prev_del = NULL;
-	}
-
-	/* we ourselves need to inform our 'next' that we will still point it */
-	if (srv->next)
-		MT_LIST_APPEND(&srv->next->prev_deleted, &srv->prev_deleted);
 
 	/* remove srv from addr_node tree */
 	eb32_delete(&srv->conf.id);
