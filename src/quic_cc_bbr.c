@@ -177,13 +177,6 @@ enum bbr_state {
 	BBR_ST_PROBE_RTT,
 };
 
-enum bbr_ack_phase {
-	BBR_ACK_PHASE_ACKS_PROBE_STARTING,
-	BBR_ACK_PHASE_ACKS_PROBE_STOPPING,
-	BBR_ACK_PHASE_ACKS_PROBE_FEEDBACK,
-	BBR_ACK_PHASE_ACKS_REFILLING,
-};
-
 struct bbr {
 	/* Delivery rate sampling information. */
 	struct quic_cc_drs drs;
@@ -218,7 +211,6 @@ struct bbr {
 	uint64_t offload_budget;
 	uint64_t probe_up_cnt;
 	uint32_t cycle_stamp;
-	enum bbr_ack_phase ack_phase;
 	unsigned int bw_probe_wait;
 	int bw_probe_samples;
 	int bw_probe_up_rounds;
@@ -285,7 +277,7 @@ static inline int is_inflight_too_high(struct quic_cc_rs *rs)
 		rs->tx_in_flight * BBR_LOSS_THRESH_MULT;
 }
 
-static inline int bbr_is_probing_bw(struct bbr *bbr)
+static inline int bbr_is_in_a_probe_bw_state(struct bbr *bbr)
 {
 	switch (bbr->state) {
 	case BBR_ST_PROBE_BW_DOWN:
@@ -535,7 +527,7 @@ static void bbr_bound_cwnd_for_model(struct bbr *bbr, struct quic_cc_path *p)
 {
 	uint64_t cap = UINT64_MAX;
 
-	if (bbr_is_probing_bw(bbr) && bbr->state != BBR_ST_PROBE_BW_CRUISE)
+	if (bbr_is_in_a_probe_bw_state(bbr) && bbr->state != BBR_ST_PROBE_BW_CRUISE)
 		cap = bbr->inflight_hi;
 	else if (bbr->state == BBR_ST_PROBE_RTT || bbr->state == BBR_ST_PROBE_BW_CRUISE)
 		cap = bbr_inflight_with_headroom(bbr, p);
@@ -599,7 +591,6 @@ static int bbr_init(struct quic_cc *cc)
 	bbr->offload_budget = 0;
 	bbr->probe_up_cnt = UINT64_MAX;
 	bbr->cycle_stamp = TICK_ETERNITY;
-	bbr->ack_phase = 0;
 	bbr->bw_probe_wait = 0;
 	bbr->bw_probe_samples = 0;
 	bbr->bw_probe_up_rounds = 0;
@@ -686,7 +677,7 @@ static void bbr_check_full_bw_reached(struct bbr *bbr, struct quic_cc_path *p)
 static void bbr_check_startup_high_loss(struct bbr *bbr, struct quic_cc_path *p)
 {
 	if (bbr->full_bw_reached ||
-	    bbr->loss_events_in_round <= BBR_STARTUP_FULL_LOSS_COUNT ||
+	    bbr->loss_events_in_round < BBR_STARTUP_FULL_LOSS_COUNT ||
 	    (bbr->in_loss_recovery &&
 	     bbr->round_count <= bbr->round_count_at_recovery) ||
 	    !is_inflight_too_high(&bbr->drs.rs)) {
@@ -736,6 +727,11 @@ static void bbr_raise_inflight_hi_slope(struct bbr *bbr, struct quic_cc_path *p)
 	bbr->probe_up_cnt = MAX(p->cwnd / growth_this_round, 1) * p->mtu;
 }
 
+static inline void bbr_advance_max_bw_filter(struct bbr *bbr)
+{
+	bbr->cycle_count++;
+}
+
 /* 4.3.3. ProbeBW
  *
  * Long-lived BBR flows tend to spend the vast majority of their time in the
@@ -767,11 +763,12 @@ static void bbr_start_probe_bw_down(struct bbr *bbr)
 	bbr->probe_up_cnt = UINT64_MAX;
 	bbr_pick_probe_wait(bbr);
 	bbr->cycle_stamp = now_ms;
-	bbr->ack_phase = BBR_ACK_PHASE_ACKS_PROBE_STOPPING;
 	bbr_start_round(bbr);
 	bbr->state = BBR_ST_PROBE_BW_DOWN;
 	bbr->pacing_gain = 90;
 	bbr->cwnd_gain = BBR_DEFAULT_CWND_GAIN_MULT;
+	if (!bbr->drs.rs.is_app_limited)
+		bbr_advance_max_bw_filter(bbr);
 }
 
 /*  4.3.3.2. ProbeBW_CRUISE
@@ -800,7 +797,6 @@ static void bbr_start_probe_bw_refill(struct bbr *bbr)
 	bbr_reset_lower_bounds(bbr);
 	bbr->bw_probe_up_rounds = 0;
 	bbr->bw_probe_up_acks = 0;
-	bbr->ack_phase = BBR_ACK_PHASE_ACKS_REFILLING;
 	bbr_start_round(bbr);
 	bbr->state = BBR_ST_PROBE_BW_REFILL;
 	bbr->pacing_gain = 100;
@@ -809,7 +805,6 @@ static void bbr_start_probe_bw_refill(struct bbr *bbr)
 
 static void bbr_start_probe_bw_up(struct bbr *bbr, struct quic_cc_path *p)
 {
-	bbr->ack_phase = BBR_ACK_PHASE_ACKS_PROBE_STARTING;
 	bbr_start_round(bbr);
 	bbr_reset_full_bw(bbr);
 	bbr->full_bw = p->delivery_rate;
@@ -843,14 +838,9 @@ static void bbr_exit_probe_rtt(struct bbr *bbr)
 	}
 }
 
-static void bbr_advance_max_bw_filter(struct bbr *bbr)
-{
-	bbr->cycle_count++;
-}
-
 static uint64_t bbr_target_inflight(struct bbr *bbr, struct quic_cc_path *p)
 {
-	uint64_t bdp = bbr_inflight(bbr, p, bbr->bw, bbr->cwnd_gain);
+	uint64_t bdp = bbr_inflight(bbr, p, bbr->bw, 100);
 	return MIN(bdp, p->cwnd);
 }
 
@@ -907,16 +897,6 @@ static void bbr_probe_inflight_hi_upward(struct bbr *bbr, struct quic_cc_path *p
 static void bbr_adapt_upper_bounds(struct bbr *bbr, struct quic_cc_path *p,
                                    uint32_t acked)
 {
-	if (bbr->ack_phase == BBR_ACK_PHASE_ACKS_PROBE_STARTING && bbr->round_start)
-		/* starting to get bw probing samples */
-		bbr->ack_phase = BBR_ACK_PHASE_ACKS_PROBE_FEEDBACK;
-
-	if (bbr->ack_phase == BBR_ACK_PHASE_ACKS_PROBE_STOPPING && bbr->round_start) {
-		/* end of samples from bw probing phase */
-		if (bbr_is_probing_bw(bbr) && !bbr->drs.rs.is_app_limited)
-			bbr_advance_max_bw_filter(bbr);
-	}
-
 	if (bbr_is_inflight_too_high(bbr, p))
 		return;
 
@@ -1046,6 +1026,13 @@ static void bbr_loss_lower_bounds(struct bbr *bbr)
 	                       bbr->inflight_lo * BBR_BETA_MULT / BBR_BETA_DIVI);
 }
 
+static inline int bbr_is_probing_bw(struct bbr *bbr)
+{
+	return bbr->state == BBR_ST_STARTUP ||
+		bbr->state == BBR_ST_PROBE_BW_REFILL ||
+		bbr->state == BBR_ST_PROBE_BW_UP;
+}
+
 static void bbr_adapt_lower_bounds_from_congestion(struct bbr *bbr, struct quic_cc_path *p)
 {
 	if (bbr_is_probing_bw(bbr))
@@ -1147,7 +1134,7 @@ static void bbr_update_probe_bw_cycle_phase(struct bbr *bbr, struct quic_cc_path
 		return; /* only handling steady-state behavior here */
 
 	bbr_adapt_upper_bounds(bbr, p, acked);
-	if (!bbr_is_probing_bw(bbr))
+	if (!bbr_is_in_a_probe_bw_state(bbr))
 		return; /* only handling ProbeBW states here: */
 
 	switch (bbr->state) {
@@ -1241,7 +1228,6 @@ static inline void bbr_check_probe_rtt(struct bbr *bbr, struct quic_cc_path *p)
 		bbr_enter_probe_rtt(bbr);
 		bbr_save_cwnd(bbr, p);
 		bbr->probe_rtt_done_stamp = TICK_ETERNITY;
-		bbr->ack_phase = BBR_ACK_PHASE_ACKS_PROBE_STOPPING;
 		bbr_start_round(bbr);
 	}
 
@@ -1296,7 +1282,7 @@ static void bbr_update_control_parameters(struct bbr *bbr,
 
 static inline int in_recovery_period(struct quic_cc_path *p, uint32_t ts)
 {
-	return tick_isset(p->recovery_start_ts) ||
+	return tick_isset(p->recovery_start_ts) &&
 		tick_is_le(ts, p->recovery_start_ts);
 }
 
@@ -1355,9 +1341,13 @@ static uint64_t bbr_inflight_hi_from_lost_packet(struct quic_cc_rs *rs,
 	BUG_ON(rs->lost < size);
 	/* What was lost before this packet? */
 	lost_prev = rs->lost - size;
+	if (BBR_LOSS_THRESH_MULT * inflight_prev < lost_prev * BBR_LOSS_THRESH_DIVI)
+		return inflight_prev;
+
 	lost_prefix =
 		(BBR_LOSS_THRESH_MULT * inflight_prev - lost_prev * BBR_LOSS_THRESH_DIVI) /
 		(BBR_LOSS_THRESH_DIVI - BBR_LOSS_THRESH_MULT);
+	/* At what inflight value did losses cross BBRLossThresh? */
 	return inflight_prev + lost_prefix;
 }
 
@@ -1423,7 +1413,7 @@ static void bbr_handle_restart_from_idle(struct bbr *bbr, struct quic_cc_path *p
 	bbr->idle_restart = 1;
 	bbr->extra_acked_interval_start = now_ms;
 
-	if (bbr_is_probing_bw(bbr))
+	if (bbr_is_in_a_probe_bw_state(bbr))
 		bbr_set_pacing_rate_with_gain(bbr, p, 100);
 	else if (bbr->state == BBR_ST_PROBE_RTT)
 		bbr_check_probe_rtt_done(bbr, p);
@@ -1457,7 +1447,7 @@ static void bbr_congestion_event(struct quic_cc *cc, uint32_t ts)
 		tick_isset(bbr->recovery_start_ts) || in_recovery_period(p, ts))
 		return;
 
-	bbr->recovery_start_ts = ts;
+	bbr->recovery_start_ts = now_ms;
 }
 
 /* Callback to return the delivery rate sample struct from <cc> */
