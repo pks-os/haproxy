@@ -87,13 +87,16 @@ struct show_cert_ctx {
 	int transaction;
 };
 
+#define SHOW_SNI_OPT_1FRONTEND  (1 << 0) /* show only the selected frontend */
+#define SHOW_SNI_OPT_NOTAFTER   (1 << 1) /* show certificates that are [A]fter the notAfter date */
+
 /* CLI context used by "show ssl sni" */
 struct show_sni_ctx {
 	struct proxy *px;
 	struct bind_conf *bind;
 	struct ebmb_node *n;
 	int nodetype;
-	int onefrontend;
+	int options;
 };
 
 /* CLI context used by "dump ssl cert" */
@@ -1570,7 +1573,8 @@ static int cli_io_handler_show_sni(struct appctx *appctx)
 
 	/* ctx->bind is NULL only once we finished dumping a frontend or when starting
 	 * so let's dump the header in these cases*/
-	if (ctx->bind == NULL && (ctx->onefrontend == 1 || (ctx->onefrontend == 0 && ctx->px == proxies_list)))
+	if (ctx->bind == NULL && (ctx->options & SHOW_SNI_OPT_1FRONTEND ||
+	    (!(ctx->options & SHOW_SNI_OPT_1FRONTEND) && ctx->px == proxies_list)))
 		chunk_appendf(trash, "# Frontend/Bind\tSNI\tNegative Filter\tType\tFilename\tNotAfter\tNotBefore\n");
 	if (applet_putchk(appctx, trash) == -1)
 		goto yield;
@@ -1615,6 +1619,13 @@ static int cli_io_handler_show_sni(struct appctx *appctx)
 
 					if (sni->neg)
 						continue;
+#ifdef HAVE_ASN1_TIME_TO_TM
+					if (ctx->options & SHOW_SNI_OPT_NOTAFTER) {
+						time_t notAfter = x509_get_notafter_time_t(sni->ckch_inst->ckch_store->data->cert);
+						if (!(date.tv_sec > notAfter))
+							continue;
+					}
+#endif
 
 					chunk_appendf(trash, "%s/%s:%d\t", bind->frontend->id, bind->file, bind->line);
 
@@ -1667,7 +1678,7 @@ static int cli_io_handler_show_sni(struct appctx *appctx)
 		}
 		ctx->bind = NULL;
 		/* only want to display the specified frontend */
-		if (ctx->onefrontend)
+		if (ctx->options & SHOW_SNI_OPT_1FRONTEND)
 			break;
 	}
 	ctx->px = NULL;
@@ -1686,50 +1697,61 @@ yield:
 }
 
 
-/* parsing function for 'show ssl sni [-f <frontend>]' */
+/* parsing function for 'show ssl sni [-f <frontend>] [-A]' */
 static int cli_parse_show_sni(char **args, char *payload, struct appctx *appctx, void *private)
 {
 	struct show_sni_ctx *ctx = applet_reserve_svcctx(appctx, sizeof(*ctx));
-
+	int cur_arg = 3;
 
 	ctx->px = proxies_list;
 
 	/* look for the right <frontend> to display */
-	if (*args[3]) {
+
+	while (*args[cur_arg]) {
 		struct proxy *px;
 
-		if (strcmp(args[3], "-f") != 0)
-			return cli_err(appctx, "'show ssl sni' only supports a '-f' option!\n");
+		if (strcmp(args[cur_arg], "-f") == 0) {
 
-		if (*args[4] == '\0')
-			return cli_err(appctx, "'-f' requires a frontend name !\n");
+			if (*args[cur_arg+1] == '\0')
+				return cli_err(appctx, "'-f' requires a frontend name!\n");
 
-		for (px = proxies_list; px; px = px->next) {
+			for (px = proxies_list; px; px = px->next) {
 
-			/* only check the frontends */
-			if (!(px->cap & PR_CAP_FE))
-				continue;
+				/* only check the frontends */
+				if (!(px->cap & PR_CAP_FE))
+					continue;
 
-			/* skip the internal proxies */
-			if (px->cap & PR_CAP_INT)
-				continue;
+				/* skip the internal proxies */
+				if (px->cap & PR_CAP_INT)
+					continue;
 
-			if (strcmp(px->id, args[3]) == 0) {
-				ctx->px = px;
-				ctx->onefrontend = 1;
+				if (strcmp(px->id, args[cur_arg+1]) == 0) {
+					ctx->px = px;
+					ctx->options |= SHOW_SNI_OPT_1FRONTEND;
+				}
 			}
+			cur_arg++; /* skip the argument */
+			if (ctx->px == NULL)
+				return cli_err(appctx, "Couldn't find the specified frontend!\n");
+
+		} else if (strcmp(args[cur_arg], "-A") == 0) {
+			/* when current date > notAfter */
+			ctx->options |= SHOW_SNI_OPT_NOTAFTER;
+#ifndef HAVE_ASN1_TIME_TO_TM
+			return cli_err(appctx, "'-A' option is only supported with OpenSSL >= 1.1.1!\n");
+#endif
+
+		} else {
+
+			return cli_err(appctx, "Invalid parameters, 'show ssl sni' only supports '-f', or '-A' options!\n");
 		}
-		if (ctx->px == NULL)
-			goto error;
+		cur_arg++;
 	}
 
 	if (HA_SPIN_TRYLOCK(CKCH_LOCK, &ckch_lock))
 		return cli_err(appctx, "Can't list SNIs\nOperations on certificates are currently locked!\n");
 
 	return 0;
-
-error:
-	return cli_err(appctx, "Couldn't find the specified frontend!\n");
 }
 
 /* release function of the  `show ssl cert' command */
@@ -2181,7 +2203,7 @@ yield:
 #endif
 }
 
-/* parsing function for 'show ssl cert [certfile]' */
+/* parsing function for 'show ssl cert [[*][\]<certfile>]' */
 static int cli_parse_show_cert(char **args, char *payload, struct appctx *appctx, void *private)
 {
 	struct show_cert_ctx *ctx = applet_reserve_svcctx(appctx, sizeof(*ctx));
@@ -2210,17 +2232,27 @@ static int cli_parse_show_cert(char **args, char *payload, struct appctx *appctx
 		}
 
 		if (*args[3] == '*') {
+			char *filename = args[3]+1;
+
 			from_transaction = 1;
 			if (!ckchs_transaction.new_ckchs)
 				goto error;
 
 			ckchs = ckchs_transaction.new_ckchs;
 
-			if (strcmp(args[3] + 1, ckchs->path) != 0)
+			if (filename[0] == '\\')
+				filename++;
+
+			if (strcmp(filename, ckchs->path) != 0)
 				goto error;
 
 		} else {
-			if ((ckchs = ckchs_lookup(args[3])) == NULL)
+			char *filename = args[3];
+
+			if (filename[0] == '\\')
+				filename++;
+
+			if ((ckchs = ckchs_lookup(filename)) == NULL)
 				goto error;
 
 		}
@@ -3552,7 +3584,7 @@ yield:
 }
 
 
-/* parsing function for 'show ssl ca-file [cafile[:index]]'.
+/* parsing function for 'show ssl ca-file [[*][\]<cafile>[:index]]'.
  * It prepares a show_cafile_ctx context, and checks the global
  * cafile_transaction under the ckch_lock (read only).
  */
@@ -3594,18 +3626,27 @@ static int cli_parse_show_cafile(char **args, char *payload, struct appctx *appc
 		}
 
 		if (*args[3] == '*') {
+			char *filename = args[3]+1;
+
+			if (filename[0] == '\\')
+				filename++;
+
 			if (!cafile_transaction.new_cafile_entry)
 				goto error;
 
 			cafile_entry = cafile_transaction.new_cafile_entry;
 
-			if (strcmp(args[3] + 1, cafile_entry->path) != 0)
+			if (strcmp(filename, cafile_entry->path) != 0)
 				goto error;
 
 		} else {
+			char *filename = args[3];
+
+			if (filename[0] == '\\')
+				filename++;
 			/* Get the "original" cafile_entry and not the
 			 * uncommitted one if it exists. */
-			if ((cafile_entry = ssl_store_get_cafile_entry(args[3], 1)) == NULL || cafile_entry->type != CAFILE_CERT)
+			if ((cafile_entry = ssl_store_get_cafile_entry(filename, 1)) == NULL || cafile_entry->type != CAFILE_CERT)
 				goto error;
 		}
 
@@ -4159,7 +4200,7 @@ end:
 	return 0;
 }
 
-/* IO handler of details "show ssl crl-file <filename[:index]>".
+/* IO handler of details "show ssl crl-file [*][\]<filename[:index]>".
  * It uses show_crlfile_ctx and the global
  * crlfile_transaction.new_cafile_entry in read-only.
  */
@@ -4261,18 +4302,26 @@ static int cli_parse_show_crlfile(char **args, char *payload, struct appctx *app
 		}
 
 		if (*args[3] == '*') {
+			char *filename = args[3]+1;
+
+			if (filename[0] == '\\')
+				 filename++;
 			if (!crlfile_transaction.new_crlfile_entry)
 				goto error;
 
 			cafile_entry = crlfile_transaction.new_crlfile_entry;
 
-			if (strcmp(args[3] + 1, cafile_entry->path) != 0)
+			if (strcmp(filename, cafile_entry->path) != 0)
 				goto error;
 
 		} else {
+			char *filename = args[3];
+
+			if (filename[0] == '\\')
+				filename++;
 			/* Get the "original" cafile_entry and not the
 			 * uncommitted one if it exists. */
-			if ((cafile_entry = ssl_store_get_cafile_entry(args[3], 1)) == NULL || cafile_entry->type != CAFILE_CRL)
+			if ((cafile_entry = ssl_store_get_cafile_entry(filename, 1)) == NULL || cafile_entry->type != CAFILE_CRL)
 				goto error;
 		}
 
@@ -4378,7 +4427,7 @@ void ckch_deinit()
 
 /* register cli keywords */
 static struct cli_kw_list cli_kws = {{ },{
-	{ { "show", "ssl", "sni", NULL },       "show ssl sni [-f <frontend>]            : display the list of SNI and their corresponding filename",              cli_parse_show_sni, cli_io_handler_show_sni, cli_release_show_sni },
+	{ { "show", "ssl", "sni", NULL },       "show ssl sni [-f <frontend>] [-A]       : display the list of SNI and their corresponding filename",              cli_parse_show_sni, cli_io_handler_show_sni, cli_release_show_sni },
 
 	{ { "new", "ssl", "cert", NULL },       "new ssl cert <certfile>                 : create a new certificate file to be used in a crt-list or a directory", cli_parse_new_cert, NULL, NULL },
 	{ { "set", "ssl", "cert", NULL },       "set ssl cert <certfile> <payload>       : replace a certificate file",                                            cli_parse_set_cert, NULL, NULL },

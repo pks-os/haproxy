@@ -23,8 +23,6 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <fcntl.h>
-#include <errno.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <sys/resource.h>
@@ -1972,7 +1970,6 @@ static void step_init_2(int argc, char** argv)
 	struct proxy *px;
 	struct post_check_fct *pcf;
 	struct pre_check_fct *prcf;
-	int ideal_maxconn;
 	const char *cc, *cflags, *opts;
 
 	/* destroy unreferenced defaults proxies  */
@@ -2156,180 +2153,8 @@ static void step_init_2(int argc, char** argv)
 				global.maxsock += p->peers_fe->maxconn;
 	}
 
-	/* Now we want to compute the maxconn and possibly maxsslconn values.
-	 * It's a bit tricky. Maxconn defaults to the pre-computed value based
-	 * on rlim_fd_cur and the number of FDs in use due to the configuration,
-	 * and maxsslconn defaults to DEFAULT_MAXSSLCONN. On top of that we can
-	 * enforce a lower limit based on memmax.
-	 *
-	 * If memmax is set, then it depends on which values are set. If
-	 * maxsslconn is set, we use memmax to determine how many cleartext
-	 * connections may be added, and set maxconn to the sum of the two.
-	 * If maxconn is set and not maxsslconn, maxsslconn is computed from
-	 * the remaining amount of memory between memmax and the cleartext
-	 * connections. If neither are set, then it is considered that all
-	 * connections are SSL-capable, and maxconn is computed based on this,
-	 * then maxsslconn accordingly. We need to know if SSL is used on the
-	 * frontends, backends, or both, because when it's used on both sides,
-	 * we need twice the value for maxsslconn, but we only count the
-	 * handshake once since it is not performed on the two sides at the
-	 * same time (frontend-side is terminated before backend-side begins).
-	 * The SSL stack is supposed to have filled ssl_session_cost and
-	 * ssl_handshake_cost during its initialization. In any case, if
-	 * SYSTEM_MAXCONN is set, we still enforce it as an upper limit for
-	 * maxconn in order to protect the system.
-	 */
-	ideal_maxconn = compute_ideal_maxconn();
-
-	if (!global.rlimit_memmax) {
-		if (global.maxconn == 0) {
-			global.maxconn = ideal_maxconn;
-			if (global.mode & (MODE_VERBOSE|MODE_DEBUG))
-				fprintf(stderr, "Note: setting global.maxconn to %d.\n", global.maxconn);
-		}
-	}
-#ifdef USE_OPENSSL
-	else if (!global.maxconn && !global.maxsslconn &&
-		 (global.ssl_used_frontend || global.ssl_used_backend)) {
-		/* memmax is set, compute everything automatically. Here we want
-		 * to ensure that all SSL connections will be served. We take
-		 * care of the number of sides where SSL is used, and consider
-		 * the worst case : SSL used on both sides and doing a handshake
-		 * simultaneously. Note that we can't have more than maxconn
-		 * handshakes at a time by definition, so for the worst case of
-		 * two SSL conns per connection, we count a single handshake.
-		 */
-		int sides = !!global.ssl_used_frontend + !!global.ssl_used_backend;
-		int64_t mem = global.rlimit_memmax * 1048576ULL;
-		int retried = 0;
-
-		mem -= global.tune.sslcachesize * 200ULL; // about 200 bytes per SSL cache entry
-		mem -= global.maxzlibmem;
-		mem = mem * MEM_USABLE_RATIO;
-
-		/* Principle: we test once to set maxconn according to the free
-		 * memory. If it results in values the system rejects, we try a
-		 * second time by respecting rlim_fd_max. If it fails again, we
-		 * go back to the initial value and will let the final code
-		 * dealing with rlimit report the error. That's up to 3 attempts.
-		 */
-		do {
-			global.maxconn = mem /
-				((STREAM_MAX_COST + 2 * global.tune.bufsize) +    // stream + 2 buffers per stream
-				 sides * global.ssl_session_max_cost +            // SSL buffers, one per side
-				 global.ssl_handshake_max_cost);                  // 1 handshake per connection max
-
-			if (retried == 1)
-				global.maxconn = MIN(global.maxconn, ideal_maxconn);
-			global.maxconn = round_2dig(global.maxconn);
-#ifdef SYSTEM_MAXCONN
-			if (global.maxconn > SYSTEM_MAXCONN)
-				global.maxconn = SYSTEM_MAXCONN;
-#endif /* SYSTEM_MAXCONN */
-			global.maxsslconn = sides * global.maxconn;
-
-			if (check_if_maxsock_permitted(compute_ideal_maxsock(global.maxconn)))
-				break;
-		} while (retried++ < 2);
-
-		if (global.mode & (MODE_VERBOSE|MODE_DEBUG))
-			fprintf(stderr, "Note: setting global.maxconn to %d and global.maxsslconn to %d.\n",
-			        global.maxconn, global.maxsslconn);
-	}
-	else if (!global.maxsslconn &&
-		 (global.ssl_used_frontend || global.ssl_used_backend)) {
-		/* memmax and maxconn are known, compute maxsslconn automatically.
-		 * maxsslconn being forced, we don't know how many of it will be
-		 * on each side if both sides are being used. The worst case is
-		 * when all connections use only one SSL instance because
-		 * handshakes may be on two sides at the same time.
-		 */
-		int sides = !!global.ssl_used_frontend + !!global.ssl_used_backend;
-		int64_t mem = global.rlimit_memmax * 1048576ULL;
-		int64_t sslmem;
-
-		mem -= global.tune.sslcachesize * 200ULL; // about 200 bytes per SSL cache entry
-		mem -= global.maxzlibmem;
-		mem = mem * MEM_USABLE_RATIO;
-
-		sslmem = mem - global.maxconn * (int64_t)(STREAM_MAX_COST + 2 * global.tune.bufsize);
-		global.maxsslconn = sslmem / (global.ssl_session_max_cost + global.ssl_handshake_max_cost);
-		global.maxsslconn = round_2dig(global.maxsslconn);
-
-		if (sslmem <= 0 || global.maxsslconn < sides) {
-			ha_alert("Cannot compute the automatic maxsslconn because global.maxconn is already too "
-				 "high for the global.memmax value (%d MB). The absolute maximum possible value "
-				 "without SSL is %d, but %d was found and SSL is in use.\n",
-				 global.rlimit_memmax,
-				 (int)(mem / (STREAM_MAX_COST + 2 * global.tune.bufsize)),
-				 global.maxconn);
-			exit(1);
-		}
-
-		if (global.maxsslconn > sides * global.maxconn)
-			global.maxsslconn = sides * global.maxconn;
-
-		if (global.mode & (MODE_VERBOSE|MODE_DEBUG))
-			fprintf(stderr, "Note: setting global.maxsslconn to %d\n", global.maxsslconn);
-	}
-#endif
-	else if (!global.maxconn) {
-		/* memmax and maxsslconn are known/unused, compute maxconn automatically */
-		int sides = !!global.ssl_used_frontend + !!global.ssl_used_backend;
-		int64_t mem = global.rlimit_memmax * 1048576ULL;
-		int64_t clearmem;
-		int retried = 0;
-
-		if (global.ssl_used_frontend || global.ssl_used_backend)
-			mem -= global.tune.sslcachesize * 200ULL; // about 200 bytes per SSL cache entry
-
-		mem -= global.maxzlibmem;
-		mem = mem * MEM_USABLE_RATIO;
-
-		clearmem = mem;
-		if (sides)
-			clearmem -= (global.ssl_session_max_cost + global.ssl_handshake_max_cost) * (int64_t)global.maxsslconn;
-
-		/* Principle: we test once to set maxconn according to the free
-		 * memory. If it results in values the system rejects, we try a
-		 * second time by respecting rlim_fd_max. If it fails again, we
-		 * go back to the initial value and will let the final code
-		 * dealing with rlimit report the error. That's up to 3 attempts.
-		 */
-		do {
-			global.maxconn = clearmem / (STREAM_MAX_COST + 2 * global.tune.bufsize);
-			if (retried == 1)
-				global.maxconn = MIN(global.maxconn, ideal_maxconn);
-			global.maxconn = round_2dig(global.maxconn);
-#ifdef SYSTEM_MAXCONN
-			if (global.maxconn > SYSTEM_MAXCONN)
-				global.maxconn = SYSTEM_MAXCONN;
-#endif /* SYSTEM_MAXCONN */
-
-			if (clearmem <= 0 || !global.maxconn) {
-				ha_alert("Cannot compute the automatic maxconn because global.maxsslconn is already too "
-					 "high for the global.memmax value (%d MB). The absolute maximum possible value "
-					 "is %d, but %d was found.\n",
-					 global.rlimit_memmax,
-				 (int)(mem / (global.ssl_session_max_cost + global.ssl_handshake_max_cost)),
-					 global.maxsslconn);
-				exit(1);
-			}
-
-			if (check_if_maxsock_permitted(compute_ideal_maxsock(global.maxconn)))
-				break;
-		} while (retried++ < 2);
-
-		if (global.mode & (MODE_VERBOSE|MODE_DEBUG)) {
-			if (sides && global.maxsslconn > sides * global.maxconn) {
-				fprintf(stderr, "Note: global.maxsslconn is forced to %d which causes global.maxconn "
-				        "to be limited to %d. Better reduce global.maxsslconn to get more "
-				        "room for extra connections.\n", global.maxsslconn, global.maxconn);
-			}
-			fprintf(stderr, "Note: setting global.maxconn to %d\n", global.maxconn);
-		}
-	}
-
+	/* Compute the global.maxconn and possibly global.maxsslconn values */
+	set_global_maxconn();
 	global.maxsock = compute_ideal_maxsock(global.maxconn);
 	global.hardmaxconn = global.maxconn;
 	if (!global.maxpipes)
@@ -2485,7 +2310,6 @@ static void step_init_2(int argc, char** argv)
  */
 static void step_init_3(void)
 {
-	struct rlimit limit;
 
 	signal_register_fct(SIGQUIT, dump, SIGQUIT);
 	signal_register_fct(SIGUSR1, sig_soft_stop, SIGUSR1);
@@ -2499,54 +2323,8 @@ static void step_init_3(void)
 	signal_register_fct(SIGPIPE, NULL, 0);
 
 	/* ulimits */
-	if (!global.rlimit_nofile)
-		global.rlimit_nofile = global.maxsock;
-
-	if (global.rlimit_nofile) {
-		limit.rlim_cur = global.rlimit_nofile;
-		limit.rlim_max = MAX(rlim_fd_max_at_boot, limit.rlim_cur);
-
-		if ((global.fd_hard_limit && limit.rlim_cur > global.fd_hard_limit) ||
-		    raise_rlim_nofile(NULL, &limit) != 0) {
-			getrlimit(RLIMIT_NOFILE, &limit);
-			if (global.fd_hard_limit && limit.rlim_cur > global.fd_hard_limit)
-				limit.rlim_cur = global.fd_hard_limit;
-
-			if (global.tune.options & GTUNE_STRICT_LIMITS) {
-				ha_alert("[%s.main()] Cannot raise FD limit to %d, limit is %d.\n",
-					 progname, global.rlimit_nofile, (int)limit.rlim_cur);
-				exit(1);
-			}
-			else {
-				/* try to set it to the max possible at least */
-				limit.rlim_cur = limit.rlim_max;
-				if (global.fd_hard_limit && limit.rlim_cur > global.fd_hard_limit)
-					limit.rlim_cur = global.fd_hard_limit;
-
-				if (raise_rlim_nofile(&limit, &limit) == 0)
-					getrlimit(RLIMIT_NOFILE, &limit);
-
-				ha_warning("[%s.main()] Cannot raise FD limit to %d, limit is %d.\n",
-					   progname, global.rlimit_nofile, (int)limit.rlim_cur);
-				global.rlimit_nofile = limit.rlim_cur;
-			}
-		}
-	}
-
-	if (global.rlimit_memmax) {
-		limit.rlim_cur = limit.rlim_max =
-			global.rlimit_memmax * 1048576ULL;
-		if (setrlimit(RLIMIT_DATA, &limit) == -1) {
-			if (global.tune.options & GTUNE_STRICT_LIMITS) {
-				ha_alert("[%s.main()] Cannot fix MEM limit to %d megs.\n",
-					 progname, global.rlimit_memmax);
-				exit(1);
-			}
-			else
-				ha_warning("[%s.main()] Cannot fix MEM limit to %d megs.\n",
-					   progname, global.rlimit_memmax);
-		}
-	}
+	apply_nofile_limit();
+	apply_memory_limit();
 
 #if defined(USE_LINUX_CAP)
 	/* If CAP_NET_BIND_SERVICE is in binary file permitted set and process
@@ -2565,8 +2343,6 @@ static void step_init_3(void)
  */
 static void step_init_4(void)
 {
-	struct rlimit limit;
-
 	/* MODE_QUIET is applied here, it can inhibit alerts and warnings below this line */
 	if (getenv("HAPROXY_MWORKER_REEXEC") != NULL) {
 		/* either stdin/out/err are already closed or should stay as they are. */
@@ -2586,31 +2362,10 @@ static void step_init_4(void)
 	 * be able to restart the old pids.
 	 */
 
-	/* check ulimits */
-	limit.rlim_cur = limit.rlim_max = 0;
-	getrlimit(RLIMIT_NOFILE, &limit);
-	if (limit.rlim_cur < global.maxsock) {
-		if (global.tune.options & GTUNE_STRICT_LIMITS) {
-			ha_alert("[%s.main()] FD limit (%d) too low for maxconn=%d/maxsock=%d. "
-				 "Please raise 'ulimit-n' to %d or more to avoid any trouble.\n",
-			         progname, (int)limit.rlim_cur, global.maxconn, global.maxsock,
-				 global.maxsock);
-			exit(1);
-		}
-		else
-			ha_alert("[%s.main()] FD limit (%d) too low for maxconn=%d/maxsock=%d. "
-				 "Please raise 'ulimit-n' to %d or more to avoid any trouble.\n",
-			         progname, (int)limit.rlim_cur, global.maxconn, global.maxsock,
-				 global.maxsock);
-	}
-
-	if (global.prealloc_fd && fcntl((int)limit.rlim_cur - 1, F_GETFD) == -1) {
-		if (dup2(0, (int)limit.rlim_cur - 1) == -1)
-			ha_warning("[%s.main()] Unable to preallocate file descriptor %d : %s",
-				progname, (int)limit.rlim_cur - 1, strerror(errno));
-		else
-			close((int)limit.rlim_cur - 1);
-	}
+	/* check current nofile limit reported via getrlimit() and check if we
+	 * can preallocate FDs, if global.prealloc_fd is set.
+	 */
+	check_nofile_lim_and_prealloc_fd();
 
 	/* update the ready date a last time to also account for final setup time */
 	clock_update_date(0, 1);
