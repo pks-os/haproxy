@@ -82,10 +82,11 @@ struct qcc {
 
 	struct eb_root streams_by_id; /* all active streams by their ID */
 
-	struct list send_retry_list; /* list of qcs eligible to send retry */
+	struct list recv_list; /* list of qcs for which demux can be resumed */
 	struct list send_list; /* list of qcs ready to send (STREAM, STOP_SENDING or RESET_STREAM emission) */
 	struct list fctl_list; /* list of sending qcs blocked on conn flow control */
 	struct list buf_wait_list; /* list of qcs blocked on stream desc buf */
+	struct list purg_list; /* list of qcs which can be purged */
 
 	struct wait_event wait_event;  /* To be used if we're waiting for I/Os */
 
@@ -151,7 +152,7 @@ struct qcs {
 	uint64_t id;
 	struct qc_stream_desc *stream;
 
-	struct list el; /* element of qcc.send_retry_list */
+	struct list el_recv; /* element of qcc.recv_list */
 	struct list el_send; /* element of qcc.send_list */
 	struct list el_opening; /* element of qcc.opening_list */
 	struct list el_fctl; /* element of qcc.fctl_list */
@@ -221,7 +222,7 @@ struct qcc_app_ops {
 #define QC_CF_CONN_FULL 0x00000008 /* no stream buffers available on connection */
 #define QC_CF_APP_SHUT  0x00000010 /* Application layer shutdown done. */
 #define QC_CF_ERR_CONN  0x00000020 /* fatal error reported by transport layer */
-#define QC_CF_WAIT_FOR_HS 0x00000040 /* QUIC handshake has been completed */
+#define QC_CF_WAIT_HS   0x00000040 /* MUX init before QUIC handshake completed (0-RTT) */
 
 /* This function is used to report flags in debugging tools. Please reflect
  * below any single-bit flag addition above in the same order via the
@@ -238,7 +239,7 @@ static forceinline char *qcc_show_flags(char *buf, size_t len, const char *delim
 	_(QC_CF_CONN_FULL,
 	_(QC_CF_APP_SHUT,
 	_(QC_CF_ERR_CONN,
-	_(QC_CF_WAIT_FOR_HS))))));
+	_(QC_CF_WAIT_HS))))));
 	/* epilogue */
 	_(~0U);
 	return buf;
