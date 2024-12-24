@@ -99,6 +99,10 @@ int ssl_sock_get_ocsp_arg_kt_index(int evp_keytype)
  */
 int ssl_sock_ocsp_stapling_cbk(SSL *ssl, void *arg)
 {
+	struct connection *conn = SSL_get_ex_data(ssl, ssl_app_data_index);
+	struct listener *li;
+	struct ssl_counters *counters = NULL;
+	struct ssl_counters *counters_px = NULL;
 	struct certificate_ocsp *ocsp;
 	struct ocsp_cbk_arg *ocsp_arg;
 	char *ssl_buf;
@@ -109,15 +113,21 @@ int ssl_sock_ocsp_stapling_cbk(SSL *ssl, void *arg)
 
 	ctx = SSL_get_SSL_CTX(ssl);
 	if (!ctx)
-		return SSL_TLSEXT_ERR_NOACK;
+		goto error;
+
+	if (obj_type(conn->target) == OBJ_TYPE_LISTENER) {
+		li = __objt_listener(conn->target);
+		counters = EXTRA_COUNTERS_GET(li->extra_counters, &ssl_stats_module);
+		counters_px = EXTRA_COUNTERS_GET(li->bind_conf->frontend->extra_counters_fe, &ssl_stats_module);
+	}
 
 	ocsp_arg = SSL_CTX_get_ex_data(ctx, ocsp_ex_index);
 	if (!ocsp_arg)
-		return SSL_TLSEXT_ERR_NOACK;
+		goto error;
 
 	ssl_pkey = SSL_get_privatekey(ssl);
 	if (!ssl_pkey)
-		return SSL_TLSEXT_ERR_NOACK;
+		goto error;
 
 	key_type = EVP_PKEY_base_id(ssl_pkey);
 
@@ -130,7 +140,7 @@ int ssl_sock_ocsp_stapling_cbk(SSL *ssl, void *arg)
 		index = ssl_sock_get_ocsp_arg_kt_index(key_type);
 
 		if (index < 0)
-			return SSL_TLSEXT_ERR_NOACK;
+			goto error;
 
 		ocsp = ocsp_arg->m_ocsp[index];
 
@@ -140,16 +150,32 @@ int ssl_sock_ocsp_stapling_cbk(SSL *ssl, void *arg)
 	    !ocsp->response.area ||
 	    !ocsp->response.data ||
 	    (ocsp->expire < date.tv_sec))
-		return SSL_TLSEXT_ERR_NOACK;
+		goto error;
 
 	ssl_buf = OPENSSL_malloc(ocsp->response.data);
 	if (!ssl_buf)
-		return SSL_TLSEXT_ERR_NOACK;
+		goto error;
+
 
 	memcpy(ssl_buf, ocsp->response.area, ocsp->response.data);
 	SSL_set_tlsext_status_ocsp_resp(ssl, (unsigned char*)ssl_buf, ocsp->response.data);
 
+	if (counters) {
+		HA_ATOMIC_INC(&counters->ocsp_staple);
+		HA_ATOMIC_INC(&counters_px->ocsp_staple);
+	}
+
 	return SSL_TLSEXT_ERR_OK;
+
+
+error:
+
+	if (counters) {
+		HA_ATOMIC_INC(&counters->failed_ocsp_staple);
+		HA_ATOMIC_INC(&counters_px->failed_ocsp_staple);
+	}
+
+	return SSL_TLSEXT_ERR_NOACK;
 }
 
 #endif /* !defined(OPENSSL_NO_OCSP) */

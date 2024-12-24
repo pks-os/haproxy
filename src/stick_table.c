@@ -1647,6 +1647,47 @@ int stktable_get_data_type(char *name)
 	return -1;
 }
 
+/*
+ * Same as stktable_get_data_type() but also expects optional index after the
+ * name in the form "name[idx]", but only for array types
+ * If index optional argument is not provided, default value (0) is applied
+ *
+ * Returns the data type number on success, or < 0 if not found.
+ */
+int stktable_get_data_type_idx(char *name, unsigned int *idx)
+{
+	int type;
+	size_t stop = strcspn(name, "[");
+
+	if (!name[stop]) {
+		/* no idx argument */
+		*idx = 0;
+		return stktable_get_data_type(name);
+	}
+
+	for (type = 0; type < STKTABLE_DATA_TYPES; type++) {
+		char *ret;
+
+		if (!stktable_data_types[type].name ||
+		    !stktable_data_types[type].is_array)
+			continue;
+		if (strncmp(name, stktable_data_types[type].name, stop))
+			continue;
+
+		/* we've got a match */
+		name += stop + 1;
+		*idx = strtoul(name, &ret, 10);
+		if (ret == name || *ret != ']')
+			return -1; // bad value
+		if (ret[1])
+			return -1; // unexpected data
+
+		return type;
+	}
+
+	return -1; // not found
+}
+
 /* Casts sample <smp> to the type of the table specified in arg(0), and looks
  * it up into this table. Returns true if found, false otherwise. The input
  * type is STR so that input samples are converted to string (since all types
@@ -5240,6 +5281,7 @@ struct show_table_ctx {
 	long long value[STKTABLE_FILTER_LEN];       /* value to compare against */
 	signed char data_type[STKTABLE_FILTER_LEN]; /* type of data to compare, or -1 if none */
 	signed char data_op[STKTABLE_FILTER_LEN];   /* operator (STD_OP_*) when data_type set */
+	unsigned int data_idx[STKTABLE_FILTER_LEN]; /* index of data to consider for array types */
 	enum {
 		STATE_NEXT = 0,                     /* px points to next table, entry=NULL */
 		STATE_DUMP,                         /* px points to curr table, entry is valid, refcount held */
@@ -5314,6 +5356,8 @@ static int table_process_entry(struct appctx *appctx, struct stksess *ts, char *
 	case STK_CLI_ACT_SET:
 		HA_RWLOCK_WRLOCK(STK_SESS_LOCK, &ts->lock);
 		for (cur_arg = 5; *args[cur_arg]; cur_arg += 2) {
+			unsigned int idx;
+
 			if (strncmp(args[cur_arg], "data.", 5) != 0) {
 				cli_err(appctx, "\"data.<type>\" followed by a value expected\n");
 				HA_RWLOCK_WRUNLOCK(STK_SESS_LOCK, &ts->lock);
@@ -5321,7 +5365,7 @@ static int table_process_entry(struct appctx *appctx, struct stksess *ts, char *
 				return 1;
 			}
 
-			data_type = stktable_get_data_type(args[cur_arg] + 5);
+			data_type = stktable_get_data_type_idx(args[cur_arg] + 5, &idx);
 			if (data_type < 0) {
 				cli_err(appctx, "Unknown data type\n");
 				HA_RWLOCK_WRUNLOCK(STK_SESS_LOCK, &ts->lock);
@@ -5343,7 +5387,17 @@ static int table_process_entry(struct appctx *appctx, struct stksess *ts, char *
 				return 1;
 			}
 
-			ptr = __stktable_data_ptr(t, ts, data_type);
+			if (stktable_data_types[data_type].is_array) {
+				ptr = stktable_data_ptr_idx(t, ts, data_type, idx);
+				if (!ptr) {
+					cli_err(appctx, "index out of range in this data array\n");
+					HA_RWLOCK_WRUNLOCK(STK_SESS_LOCK, &ts->lock);
+					stktable_touch_local(t, ts, 1);
+					return 1;
+				}
+			}
+			else
+				ptr = __stktable_data_ptr(t, ts, data_type);
 
 			switch (stktable_data_types[data_type].std_type) {
 			case STD_T_SINT:
@@ -5474,7 +5528,7 @@ static int table_prepare_data_request(struct appctx *appctx, char **args)
 		if (i > 0 && !*args[3+3*i])  // number of filter entries can be less than STKTABLE_FILTER_LEN
 			break;
 		/* condition on stored data value */
-		ctx->data_type[i] = stktable_get_data_type(args[3+3*i] + 5);
+		ctx->data_type[i] = stktable_get_data_type_idx(args[3+3*i] + 5, &ctx->data_idx[i]);
 		if (ctx->data_type[i] < 0)
 			return cli_dynerr(appctx, memprintf(&err, "Filter entry #%i: Unknown data type\n", i + 1));
 
@@ -5629,13 +5683,25 @@ static int cli_io_handler_table(struct appctx *appctx)
 					if (ctx->data_type[i] == -1)
 						break;
 					dt = ctx->data_type[i];
-					ptr = stktable_data_ptr(ctx->t,
-								ctx->entry,
-								dt);
-					/* table_prepare_data_request() normally ensures the
-					 * type is both valid and stored
-					 */
-					BUG_ON(!ptr);
+					if (stktable_data_types[dt].is_array) {
+						ptr = stktable_data_ptr_idx(ctx->t,
+									    ctx->entry,
+									    dt, ctx->data_idx[i]);
+						if (!ptr) {
+							/* index out of range */
+							skip_entry = 1;
+							break;
+						}
+					}
+					else {
+						ptr = stktable_data_ptr(ctx->t,
+									ctx->entry,
+									dt);
+						/* table_prepare_data_request() normally ensures the
+						 * type is both valid and stored
+						 */
+						BUG_ON(!ptr);
+					}
 
 					data = 0;
 					switch (stktable_data_types[dt].std_type) {
