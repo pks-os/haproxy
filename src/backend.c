@@ -967,7 +967,6 @@ int assign_server_and_queue(struct stream *s)
 	struct server *srv;
 	int err;
 
- balance_again:
 	if (s->pend_pos)
 		return SRV_STATUS_INTERNAL;
 
@@ -1029,28 +1028,50 @@ int assign_server_and_queue(struct stream *s)
 		 * is set on the server, we must also check that the server's queue is
 		 * not full, in which case we have to return FULL.
 		 */
-		if (srv->maxconn &&
-		    (srv->queue.length || srv->served >= srv_dynamic_maxconn(srv))) {
+		if (srv->maxconn) {
+			int served;
+			int got_it = 0;
 
-			if (srv->maxqueue > 0 && srv->queue.length >= srv->maxqueue)
-				return SRV_STATUS_FULL;
-
-			p = pendconn_add(s);
-			if (p) {
-				/* There's a TOCTOU here: it may happen that between the
-				 * moment we decided to queue the request and the moment
-				 * it was done, the last active request on the server
-				 * ended and no new one will be able to dequeue that one.
-				 * Since we already have our server we don't care, this
-				 * will be handled by the caller which will check for
-				 * this condition and will immediately dequeue it if
-				 * possible.
+			/*
+			 * Make sure that there's still a slot on the server.
+			 * Try to increment its served, while making sure
+			 * it is < maxconn.
+			 */
+			if (!srv->queue.length &&
+			    (served = srv->served) < srv_dynamic_maxconn(srv)) {
+				/*
+				 * Attempt to increment served, while
+				 * making sure it is always below maxconn
 				 */
-				return SRV_STATUS_QUEUED;
+
+				do {
+					got_it = _HA_ATOMIC_CAS(&srv->served,
+							        &served, served + 1);
+				} while (!got_it && served < srv_dynamic_maxconn(srv) &&
+					 __ha_cpu_relax());
 			}
-			else
-				return SRV_STATUS_INTERNAL;
-		}
+			if (!got_it) {
+				if (srv->maxqueue > 0 && srv->queue.length >= srv->maxqueue)
+					return SRV_STATUS_FULL;
+
+				p = pendconn_add(s);
+				if (p) {
+					/* There's a TOCTOU here: it may happen that between the
+					 * moment we decided to queue the request and the moment
+					 * it was done, the last active request on the server
+					 * ended and no new one will be able to dequeue that one.
+					 * Since we already have our server we don't care, this
+					 * will be handled by the caller which will check for
+					 * this condition and will immediately dequeue it if
+					 * possible.
+					 */
+					return SRV_STATUS_QUEUED;
+				}
+				else
+					return SRV_STATUS_INTERNAL;
+			}
+		} else
+			_HA_ATOMIC_INC(&srv->served);
 
 		/* OK, we can use this server. Let's reserve our place */
 		sess_change_server(s, srv);
@@ -1066,13 +1087,63 @@ int assign_server_and_queue(struct stream *s)
 			 * ended and no new one will be able to dequeue that one.
 			 * This is more visible with maxconn 1 where it can
 			 * happen 1/1000 times, though the vast majority are
-			 * correctly recovered from. Since it's so rare and we
-			 * have no server assigned, the best solution in this
-			 * case is to detect the condition, dequeue our request
-			 * and balance it again.
+			 * correctly recovered from.
+			 * To work around that, when a server is getting idle,
+			 * it will set the ready_srv field of the proxy.
+			 * Here, if ready_srv is non-NULL, we get that server,
+			 * and we attempt to switch its served from 0 to 1.
+			 * If it works, then we can just run, otherwise,
+			 * it means another stream will be running, and will
+			 * dequeue us eventually, so we can just do nothing.
 			 */
-			if (unlikely(pendconn_must_try_again(p)))
-				goto balance_again;
+			if (unlikely(s->be->ready_srv != NULL)) {
+				struct server *newserv;
+
+				newserv = HA_ATOMIC_XCHG(&s->be->ready_srv, NULL);
+				if (newserv != NULL) {
+					int got_slot = 0;
+
+					while (_HA_ATOMIC_LOAD(&newserv->served) == 0) {
+						int served = 0;
+
+						if (_HA_ATOMIC_CAS(&newserv->served, &served, 1)) {
+							got_slot = 1;
+							break;
+						}
+					}
+					if (!got_slot) {
+						/*
+						 * Somebody else can now
+						 * wake up us, stop now.
+						 */
+						return SRV_STATUS_QUEUED;
+					}
+
+					HA_SPIN_LOCK(QUEUE_LOCK, &p->queue->lock);
+					if (!p->node.node.leaf_p) {
+						/*
+						 * Okay we've been queued and
+						 * unqueued already, just leave
+						 */
+						_HA_ATOMIC_DEC(&newserv->served);
+						return SRV_STATUS_QUEUED;
+					}
+					eb32_delete(&p->node);
+					HA_SPIN_UNLOCK(QUEUE_LOCK, &p->queue->lock);
+
+					_HA_ATOMIC_DEC(&p->queue->length);
+					_HA_ATOMIC_INC(&p->queue->idx);
+					_HA_ATOMIC_DEC(&s->be->totpend);
+
+					pool_free(pool_head_pendconn, p);
+
+					s->flags |= SF_ASSIGNED;
+					s->target = &newserv->obj_type;
+					s->pend_pos = NULL;
+					sess_change_server(s, newserv);
+					return SRV_STATUS_OK;
+				}
+			}
 
 			return SRV_STATUS_QUEUED;
 		}

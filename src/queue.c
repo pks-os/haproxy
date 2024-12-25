@@ -259,6 +259,9 @@ static int pendconn_process_next_strm(struct server *srv, struct proxy *px, int 
 	struct pendconn *p = NULL;
 	struct pendconn *pp = NULL;
 	u32 pkey, ppkey;
+	int served;
+	int maxconn;
+	int got_it = 0;
 
 	p = NULL;
 	if (srv->queue.length)
@@ -277,7 +280,25 @@ static int pendconn_process_next_strm(struct server *srv, struct proxy *px, int 
 
 	if (!p && !pp)
 		return 0;
-	else if (!pp)
+
+	served = _HA_ATOMIC_LOAD(&srv->served);
+	maxconn = srv_dynamic_maxconn(srv);
+
+	while (served < maxconn && !got_it)
+		got_it = _HA_ATOMIC_CAS(&srv->served, &served, served + 1);
+
+	/* No more slot available, give up */
+	if (!got_it) {
+		if (pp)
+			HA_SPIN_UNLOCK(QUEUE_LOCK, &px->queue.lock);
+		return 0;
+	}
+
+	/*
+	 * Now we know we'll have something available.
+	 * Let's try to allocate a slot on the server.
+	 */
+	if (!pp)
 		goto use_p; /*  p != NULL */
 	else if (!p)
 		goto use_pp; /* pp != NULL */
@@ -394,10 +415,13 @@ int process_srv_queue(struct server *s)
 
 		HA_SPIN_LOCK(QUEUE_LOCK, &s->queue.lock);
 		while (s->served < maxconn) {
+			/*
+			 * pendconn_process_next_strm() will increment
+			 * the served field, only if it is < maxconn.
+			 */
 			stop = !pendconn_process_next_strm(s, p, px_ok);
 			if (stop)
 				break;
-			_HA_ATOMIC_INC(&s->served);
 			done++;
 			if (done >= global.tune.maxpollevents)
 				break;
@@ -412,6 +436,24 @@ int process_srv_queue(struct server *s)
 		__ha_barrier_atomic_store();
 		if (p->lbprm.server_take_conn)
 			p->lbprm.server_take_conn(s);
+	}
+	if (s->served == 0 && p->served == 0 && !HA_ATOMIC_LOAD(&p->ready_srv)) {
+		/*
+		 * If there is no task running on the server, and the proxy,
+		 * let it known that we are ready, there is a small race
+		 * condition if a task was being added just before we checked
+		 * the proxy queue. It will look for that server, and use it
+		 * if nothing is currently running, as there would be nobody
+		 * to wake it up.
+		 */
+		_HA_ATOMIC_STORE(&p->ready_srv, s);
+		/*
+		 * Maybe a stream was added to the queue just after we
+		 * checked, but before we set ready_srv so it would not see it,
+		 * just in case try to run one more stream.
+		 */
+		if (pendconn_process_next_strm(s, p, px_ok))
+			done++;
 	}
 	return done;
 }
@@ -617,68 +659,6 @@ int pendconn_dequeue(struct stream *strm)
 	strm->pend_pos = NULL;
 	pool_free(pool_head_pendconn, p);
 	return 0;
-}
-
-/* checks after a successful pendconn_add() if the connection ended up being
- * alone with no active connection left to dequeue it. In such a case it will
- * simply remove it from the queue, free it and return non-zero to inform the
- * caller that it must try to add the connection again, otherwise it returns
- * zero, indicating that the connection will be handled normally. The caller
- * might have to drop SF_DIRECT and/or SF_ASSIGNED if the conn was on a proxy.
- */
-int pendconn_must_try_again(struct pendconn *p)
-{
-	struct queue  *q  = p->queue;
-	struct proxy  *px = q->px;
-	struct server *sv = q->sv;
-	int ret = 0;
-
-	if (likely(!HA_ATOMIC_LOAD(&p->node.node.leaf_p)))
-		goto leave;
-
-	/* for a server, we need at least one conn left on this server to
-	 * find ours.
-	 */
-	if (likely(sv && HA_ATOMIC_LOAD(&sv->served)))
-		goto leave;
-
-	/* for a backend, we need at least one conn left on any of this
-	 * backend's servers to find ours.
-	 */
-	if (likely(!sv && HA_ATOMIC_LOAD(&px->served)))
-		goto leave;
-
-	/* OK the situation is not safe anymore, we need to check if we're
-	 * still in the queue under a lock.
-	 */
-	HA_SPIN_LOCK(QUEUE_LOCK, &q->lock);
-	HA_SPIN_LOCK(QUEUE_LOCK, &p->del_lock);
-
-	if (p->node.node.leaf_p) {
-		eb32_delete(&p->node);
-		_HA_ATOMIC_DEC(&q->length);
-		_HA_ATOMIC_INC(&q->idx);
-		_HA_ATOMIC_DEC(&px->totpend);
-		ret = 1;
-	}
-
-	HA_SPIN_UNLOCK(QUEUE_LOCK, &p->del_lock);
-	HA_SPIN_UNLOCK(QUEUE_LOCK, &q->lock);
-
-	/* check if the connection was still queued. If not, it means its
-	 * processing has begun so it's safe.
-	 */
-	if (!ret)
-		goto leave;
-
-	/* The pendconn is not queued anymore and will not be so we're safe
-	 * to free it.
-	 */
-	p->strm->pend_pos = NULL;
-	pool_free(pool_head_pendconn, p);
-
-leave:
-	return ret;
 }
 
 static enum act_return action_set_priority_class(struct act_rule *rule, struct proxy *px,
