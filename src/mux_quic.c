@@ -894,17 +894,27 @@ void qcs_send_metadata(struct qcs *qcs)
 	qc_stream_desc_sub_room(qcs->stream, NULL);
 }
 
+/* Instantiate a streamdesc instance for <qcs> stream. This is necessary to
+ * transfer data after a new request reception. <buf> can be used to forward
+ * the first received request data. <fin> must be set if the whole request is
+ * already received.
+ *
+ * Returns the newly allocated instance on success or NULL on error.
+ */
 struct stconn *qcs_attach_sc(struct qcs *qcs, struct buffer *buf, char fin)
 {
 	struct qcc *qcc = qcs->qcc;
 	struct session *sess = qcc->conn->owner;
 
+	TRACE_ENTER(QMUX_EV_STRM_RECV, qcc->conn, qcs);
 
 	/* TODO duplicated from mux_h2 */
 	sess->t_idle = ns_to_ms(now_ns - sess->accept_ts) - sess->t_handshake;
 
-	if (!sc_new_from_endp(qcs->sd, sess, buf))
+	if (!sc_new_from_endp(qcs->sd, sess, buf)) {
+		TRACE_DEVEL("leaving on error", QMUX_EV_STRM_RECV, qcc->conn, qcs);
 		return NULL;
+	}
 
 	/* QC_SF_HREQ_RECV must be set once for a stream. Else, nb_hreq counter
 	 * will be incorrect for the connection.
@@ -948,6 +958,7 @@ struct stconn *qcs_attach_sc(struct qcs *qcs, struct buffer *buf, char fin)
 		se_fl_set_error(qcs->sd);
 	}
 
+	TRACE_LEAVE(QMUX_EV_STRM_RECV, qcc->conn, qcs);
 	return qcs->sd->sc;
 }
 
@@ -1141,7 +1152,7 @@ static int qcc_decode_qcs(struct qcc *qcc, struct qcs *qcs)
 	if (qcs_is_close_remote(qcs))
 		fin = 1;
 
-	if (!(qcs->flags & QC_SF_READ_ABORTED)) {
+	if (!(qcs->flags & QC_SF_READ_ABORTED) && !qcs_is_completed(qcs)) {
 		ret = qcc->app_ops->rcv_buf(qcs, &b, fin);
 
 		if (qcc->glitches != prev_glitches)
@@ -2014,7 +2025,7 @@ static void qcs_destroy(struct qcs *qcs)
  * truncated if greater than <fc_conn_wnd>. This allows to prepare several
  * frames in a loop while respecting connection flow control window.
  *
- * Returns the length of the STREAM frame or a negative error code.
+ * Returns the payload length of the STREAM frame or a negative error code.
  */
 static int qcs_build_stream_frm(struct qcs *qcs, struct buffer *out, char fin,
                                 struct list *frm_list, uint64_t window_conn)
@@ -2103,7 +2114,7 @@ static int qcs_build_stream_frm(struct qcs *qcs, struct buffer *out, char fin,
 		            qcc->conn, qcs, &arg);
 	}
 
-	return qc_frm_len(frm);
+	return total;
 
  err:
 	TRACE_LEAVE(QMUX_EV_QCS_SEND, qcc->conn, qcs);
@@ -2265,7 +2276,7 @@ static int qcs_send_stop_sending(struct qcs *qcs)
  * This allows to prepare several frames in a loop while respecting connection
  * flow control window.
  *
- * Returns the length of the STREAM frame or a negative error code.
+ * Returns the payload length of the STREAM frame or a negative error code.
  */
 static int qcs_send(struct qcs *qcs, struct list *frms, uint64_t window_conn)
 {
@@ -2389,7 +2400,9 @@ static int qcc_emit_rs_ss(struct qcc *qcc)
  * error occured during this step, this is considered as fatal. Tx frms is
  * cleared and 0 is returned.
  *
- * Returns the sum of encoded STREAM frames length or 0 if no frame built.
+ * Returns the sum of encoded payload STREAM frames length. Note that 0 can be
+ * returned either if no frame was built or only empty payload frames were
+ * encoded.
  */
 static int qcc_build_frms(struct qcc *qcc, struct list *qcs_failed)
 {
@@ -2505,10 +2518,8 @@ static int qcc_io_send(struct qcc *qcc)
 	/* Encode new STREAM frames if list has been previously cleared. */
 	if (LIST_ISEMPTY(frms) && !LIST_ISEMPTY(&qcc->send_list)) {
 		total = qcc_build_frms(qcc, &qcs_failed);
-		if (!total) {
-			BUG_ON(!LIST_ISEMPTY(frms));
+		if (LIST_ISEMPTY(frms))
 			goto out;
-		}
 	}
 
 	if (qcc_is_pacing_active(qcc->conn)) {
