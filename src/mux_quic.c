@@ -743,7 +743,7 @@ void qcc_set_error(struct qcc *qcc, int err, int app)
 	 * is too tedious too not forget a wakeup outside of this function for
 	 * the moment.
 	 */
-	HA_ATOMIC_AND(&qcc->wait_event.tasklet->state, ~TASK_F_USR1);
+	tasklet_wakeup(qcc->wait_event.tasklet);
 }
 
 /* Increment glitch counter for <qcc> connection by <inc> steps. If configured
@@ -899,21 +899,31 @@ void qcs_send_metadata(struct qcs *qcs)
  * the first received request data. <fin> must be set if the whole request is
  * already received.
  *
- * Returns the newly allocated instance on success or NULL on error.
+ * Note that if <qcs> is already fully closed, no streamdesc is instantiated.
+ * This is useful if a RESET_STREAM was already emitted in response to a
+ * STOP_SENDING.
+ *
+ * Returns 0 on success else a negative error code. If stream is already fully
+ * closed and nothing is performed, it is considered as a success case.
  */
-struct stconn *qcs_attach_sc(struct qcs *qcs, struct buffer *buf, char fin)
+int qcs_attach_sc(struct qcs *qcs, struct buffer *buf, char fin)
 {
 	struct qcc *qcc = qcs->qcc;
 	struct session *sess = qcc->conn->owner;
 
 	TRACE_ENTER(QMUX_EV_STRM_RECV, qcc->conn, qcs);
 
+	if (qcs->st == QC_SS_CLO) {
+		TRACE_STATE("skip attach on already closed stream", QMUX_EV_STRM_RECV, qcc->conn, qcs);
+		goto out;
+	}
+
 	/* TODO duplicated from mux_h2 */
 	sess->t_idle = ns_to_ms(now_ns - sess->accept_ts) - sess->t_handshake;
 
 	if (!sc_new_from_endp(qcs->sd, sess, buf)) {
 		TRACE_DEVEL("leaving on error", QMUX_EV_STRM_RECV, qcc->conn, qcs);
-		return NULL;
+		return -1;
 	}
 
 	/* QC_SF_HREQ_RECV must be set once for a stream. Else, nb_hreq counter
@@ -958,8 +968,9 @@ struct stconn *qcs_attach_sc(struct qcs *qcs, struct buffer *buf, char fin)
 		se_fl_set_error(qcs->sd);
 	}
 
+ out:
 	TRACE_LEAVE(QMUX_EV_STRM_RECV, qcc->conn, qcs);
-	return qcs->sd->sc;
+	return 0;
 }
 
 /* Use this function for a stream <id> which is not in <qcc> stream tree. It
@@ -1152,7 +1163,7 @@ static int qcc_decode_qcs(struct qcc *qcc, struct qcs *qcs)
 	if (qcs_is_close_remote(qcs))
 		fin = 1;
 
-	if (!(qcs->flags & QC_SF_READ_ABORTED) && !qcs_is_completed(qcs)) {
+	if (!(qcs->flags & QC_SF_READ_ABORTED)) {
 		ret = qcc->app_ops->rcv_buf(qcs, &b, fin);
 
 		if (qcc->glitches != prev_glitches)
