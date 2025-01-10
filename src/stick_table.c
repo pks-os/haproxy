@@ -207,6 +207,25 @@ void stksess_setkey(struct stktable *t, struct stksess *ts, struct stktable_key 
 	}
 }
 
+/*
+ * Get the key in the sticky session <ts> present in table <t>
+ * It cannot fail as it is assumed that if <ts> exists, then the key has
+ * been set.
+ * It uses static_table_key to store the key
+ */
+struct stktable_key *stksess_getkey(struct stktable *t, struct stksess *ts)
+{
+	if (t->type != SMP_T_STR) {
+		static_table_key.key = ts->key.key;
+		static_table_key.key_len = t->key_size;
+	}
+	else {
+		static_table_key.key = ts->key.key;
+		static_table_key.key_len = strnlen2((char *)ts->key.key, t->key_size);
+	}
+	return &static_table_key;
+}
+
 /* return a shard number for key <key> of len <len> present in table <t>. This
  * takes into account the presence or absence of a peers section with shards
  * and the number of shards, the table's hash_seed, and of course the key. The
@@ -1475,13 +1494,17 @@ struct stktable_key *smp_to_stkey(struct sample *smp, struct stktable *t)
 		break;
 
 	case SMP_T_SINT:
+	{
+		uint *_sint = (uint *)&smp->data.u.sint;
+
 		/* The stick table require a 32bit unsigned int, "sint" is a
 		 * signed 64 it, so we can convert it inplace.
 		 */
-		smp->data.u.sint = (unsigned int)smp->data.u.sint;
-		static_table_key.key = &smp->data.u.sint;
+		*_sint = smp->data.u.sint;
+		static_table_key.key = _sint;
 		static_table_key.key_len = 4;
 		break;
+	}
 
 	case SMP_T_STR:
 		if (!smp_make_safe(smp))
@@ -1514,6 +1537,49 @@ struct stktable_key *smp_to_stkey(struct sample *smp, struct stktable *t)
 	}
 
 	return &static_table_key;
+}
+
+/* reverse operation for smp_to_stkey(): fills input <smp> with content of
+ * <key>
+ * smp_make_safe() may be applied to smp before returning to ensure it can be
+ * used even if the key is no longer available upon return.
+ * Returns 1 on success and 0 on failure
+ */
+int stkey_to_smp(struct sample *smp, struct stktable_key *key, int key_type)
+{
+	smp->data.type = key_type;
+	smp->flags = 0;
+
+	switch (key_type) {
+
+	case SMP_T_IPV4:
+		memcpy(&smp->data.u.ipv4, static_table_key.key, sizeof(struct in_addr));
+		break;
+	case SMP_T_IPV6:
+		memcpy(&smp->data.u.ipv6, static_table_key.key, sizeof(struct in6_addr));
+		break;
+
+	case SMP_T_SINT:
+		/* The stick table require a 32bit unsigned int, "sint" is a
+		 * signed 64 it, so we can convert it inplace.
+		 */
+		smp->data.u.sint = *(unsigned int *)static_table_key.key;
+		break;
+
+	case SMP_T_STR:
+	case SMP_T_BIN:
+		smp->data.u.str.area = static_table_key.key;
+		smp->data.u.str.data = static_table_key.key_len;
+		smp->flags = SMP_F_CONST;
+		if (!smp_make_safe(smp))
+			return 0;
+		break;
+
+	default: /* impossible case. */
+		return 0;
+	}
+
+	return 1;
 }
 
 /*
@@ -5049,6 +5115,32 @@ smp_fetch_sc_kbytes_out(const struct arg *args, struct sample *smp, const char *
 	return 1;
 }
 
+/* set <smp> to the key associated to the stream's tracked entry.
+ * Supports being called as "sc[0-9]_key" or "sc_key" only.
+ */
+static int
+smp_fetch_sc_key(const struct arg *args, struct sample *smp, const char *kw, void *private)
+{
+	struct stkctr tmpstkctr;
+	struct stkctr *stkctr;
+	struct stksess *entry;
+
+	stkctr = smp_fetch_sc_stkctr(smp->sess, smp->strm, args, kw, &tmpstkctr);
+	if (!stkctr)
+		return 0;
+
+	entry = stkctr_entry(stkctr);
+	if (entry != NULL) {
+		int ret = stkey_to_smp(smp, stksess_getkey(stkctr->table, entry), stkctr->table->type);
+
+		if (stkctr == &tmpstkctr)
+			stktable_release(stkctr->table, entry);
+
+		return !!ret;
+	}
+	return 0; /* nothing currently tracked */
+}
+
 /* set <smp> to the data rate sent to clients in bytes/s, as found in the
  * stream's tracked frontend counters. Supports being called as
  * "sc[0-9]_bytes_out_rate" or "src_bytes_out_rate" only.
@@ -5983,6 +6075,7 @@ static struct sample_fetch_kw_list smp_fetch_keywords = {ILH, {
 	{ "sc_inc_gpc1",        smp_fetch_sc_inc_gpc1,       ARG2(1,SINT,TAB), NULL, SMP_T_SINT, SMP_USE_INTRN, },
 	{ "sc_kbytes_in",       smp_fetch_sc_kbytes_in,      ARG2(1,SINT,TAB), NULL, SMP_T_SINT, SMP_USE_L4CLI, },
 	{ "sc_kbytes_out",      smp_fetch_sc_kbytes_out,     ARG2(1,SINT,TAB), NULL, SMP_T_SINT, SMP_USE_L4CLI, },
+	{ "sc_key",             smp_fetch_sc_key,            ARG1(1,SINT),     NULL, SMP_T_ANY,  SMP_USE_INTRN, },
 	{ "sc_sess_cnt",        smp_fetch_sc_sess_cnt,       ARG2(1,SINT,TAB), NULL, SMP_T_SINT, SMP_USE_INTRN, },
 	{ "sc_sess_rate",       smp_fetch_sc_sess_rate,      ARG2(1,SINT,TAB), NULL, SMP_T_SINT, SMP_USE_INTRN, },
 	{ "sc_tracked",         smp_fetch_sc_tracked,        ARG2(1,SINT,TAB), NULL, SMP_T_BOOL, SMP_USE_INTRN, },
@@ -6011,6 +6104,7 @@ static struct sample_fetch_kw_list smp_fetch_keywords = {ILH, {
 	{ "sc0_inc_gpc1",       smp_fetch_sc_inc_gpc1,       ARG1(0,TAB),      NULL, SMP_T_SINT, SMP_USE_INTRN, },
 	{ "sc0_kbytes_in",      smp_fetch_sc_kbytes_in,      ARG1(0,TAB),      NULL, SMP_T_SINT, SMP_USE_L4CLI, },
 	{ "sc0_kbytes_out",     smp_fetch_sc_kbytes_out,     ARG1(0,TAB),      NULL, SMP_T_SINT, SMP_USE_L4CLI, },
+	{ "sc0_key",            smp_fetch_sc_key,            0,                NULL, SMP_T_ANY,  SMP_USE_INTRN, },
 	{ "sc0_sess_cnt",       smp_fetch_sc_sess_cnt,       ARG1(0,TAB),      NULL, SMP_T_SINT, SMP_USE_INTRN, },
 	{ "sc0_sess_rate",      smp_fetch_sc_sess_rate,      ARG1(0,TAB),      NULL, SMP_T_SINT, SMP_USE_INTRN, },
 	{ "sc0_tracked",        smp_fetch_sc_tracked,        ARG1(0,TAB),      NULL, SMP_T_BOOL, SMP_USE_INTRN, },
@@ -6040,6 +6134,7 @@ static struct sample_fetch_kw_list smp_fetch_keywords = {ILH, {
 	{ "sc1_inc_gpc1",       smp_fetch_sc_inc_gpc1,       ARG1(0,TAB),      NULL, SMP_T_SINT, SMP_USE_INTRN, },
 	{ "sc1_kbytes_in",      smp_fetch_sc_kbytes_in,      ARG1(0,TAB),      NULL, SMP_T_SINT, SMP_USE_L4CLI, },
 	{ "sc1_kbytes_out",     smp_fetch_sc_kbytes_out,     ARG1(0,TAB),      NULL, SMP_T_SINT, SMP_USE_L4CLI, },
+	{ "sc1_key",            smp_fetch_sc_key,            0,                NULL, SMP_T_ANY,  SMP_USE_INTRN, },
 	{ "sc1_sess_cnt",       smp_fetch_sc_sess_cnt,       ARG1(0,TAB),      NULL, SMP_T_SINT, SMP_USE_INTRN, },
 	{ "sc1_sess_rate",      smp_fetch_sc_sess_rate,      ARG1(0,TAB),      NULL, SMP_T_SINT, SMP_USE_INTRN, },
 	{ "sc1_tracked",        smp_fetch_sc_tracked,        ARG1(0,TAB),      NULL, SMP_T_BOOL, SMP_USE_INTRN, },
@@ -6068,6 +6163,7 @@ static struct sample_fetch_kw_list smp_fetch_keywords = {ILH, {
 	{ "sc2_inc_gpc1",       smp_fetch_sc_inc_gpc1,       ARG1(0,TAB),      NULL, SMP_T_SINT, SMP_USE_INTRN, },
 	{ "sc2_kbytes_in",      smp_fetch_sc_kbytes_in,      ARG1(0,TAB),      NULL, SMP_T_SINT, SMP_USE_L4CLI, },
 	{ "sc2_kbytes_out",     smp_fetch_sc_kbytes_out,     ARG1(0,TAB),      NULL, SMP_T_SINT, SMP_USE_L4CLI, },
+	{ "sc2_key",            smp_fetch_sc_key,            0,                NULL, SMP_T_ANY,  SMP_USE_INTRN, },
 	{ "sc2_sess_cnt",       smp_fetch_sc_sess_cnt,       ARG1(0,TAB),      NULL, SMP_T_SINT, SMP_USE_INTRN, },
 	{ "sc2_sess_rate",      smp_fetch_sc_sess_rate,      ARG1(0,TAB),      NULL, SMP_T_SINT, SMP_USE_INTRN, },
 	{ "sc2_tracked",        smp_fetch_sc_tracked,        ARG1(0,TAB),      NULL, SMP_T_BOOL, SMP_USE_INTRN, },
