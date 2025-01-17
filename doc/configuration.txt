@@ -15290,7 +15290,7 @@ do-log
       tcp-request connection do-log             #uses special log-profile format
       tcp-request content do-log                #uses proxy logformat
 
-do-resolve(<var>,<resolvers>,[ipv4,ipv6]) <expr>
+do-resolve(<var>,<resolvers>[,ipv4|ipv6]) <expr>
   Usable in:  QUIC Ini|    TCP RqCon| RqSes| RqCnt| RsCnt|    HTTP Req| Res| Aft
                     - |          -  |   -  |   X  |   -  |          X |  - |  -
 
@@ -20060,19 +20060,19 @@ The following keywords are supported:
 ------------------------------------------------+-------------+----------------
 51d.single(prop[,prop*])                           string       string
 add(value)                                         integer      integer
-add_item(delim,[var][,suff]])                      string       string
+add_item(delim[,var[,suff]])                       string       string
 aes_gcm_dec(bits,nonce,key,aead_tag)               binary       binary
 aes_gcm_enc(bits,nonce,key,aead_tag)               binary       binary
 and(value)                                         integer      integer
 b64dec                                             string       binary
 base64                                             binary       string
-be2dec(separator,chunk_size,[truncate])            binary       string
-be2hex([separator],[chunk_size],[truncate])        binary       string
+be2dec(separator,chunk_size[,truncate])            binary       string
+be2hex([separator[,chunk_size[,truncate]]])        binary       string
 bool                                               integer      boolean
 bytes(offset[,length])                             binary       binary
 capture-req(id)                                    string       string
 capture-res(id)                                    string       string
-concat([start],[var],[end])                        string       string
+concat([start[,var[,end]]])                        string       string
 cpl                                                integer      integer
 crc32([avalanche])                                 binary       integer
 crc32c([avalanche])                                binary       integer
@@ -20093,14 +20093,14 @@ hex2i                                              binary       integer
 hmac(algorithm,key)                                binary       binary
 host_only                                          string       string
 htonl                                              integer      integer
-http_date([offset],[unit])                         integer      string
+http_date([offset[,unit]])                         integer      string
 iif(true,false)                                    boolean      string
-in_table(table)                                    string       boolean
-ipmask(mask4,[mask6])                              address      address
+in_table([table])                                  any          boolean
+ipmask(mask4[,mask6])                              address      address
 json([input-code])                                 string       string
-json_query(json_path,[output_type])                string       _outtype_
-jwt_header_query([json_path],[output_type])        string       string
-jwt_payload_query([json_path],[output_type])       string       string
+json_query(json_path[,output_type])                string       _outtype_
+jwt_header_query([json_path[,output_type]])        string       string
+jwt_payload_query([json_path[,output_type]])       string       string
 -- keyword -------------------------------------+- input type + output type -
 jwt_verify(alg,key)                                string       integer
 language(value[,default])                          string       string
@@ -20123,9 +20123,9 @@ not                                                integer      boolean
 odd                                                integer      boolean
 or(value)                                          integer      integer
 -- keyword -------------------------------------+- input type + output type -
-param(name,[delim])                                string       string
+param(name[,delim])                                string       string
 port_only                                          string       integer
-protobuf(field_number,[field_type])                binary       binary
+protobuf(field_number[,field_type])                binary       binary
 regsub(regex,subst[,flags])                        string       string
 rfc7239_field(field)                               string       string
 rfc7239_is_valid                                   string       boolean
@@ -20142,40 +20142,46 @@ sha2([bits])                                       binary       binary
 srv_queue                                          string       integer
 strcmp(var)                                        string       boolean
 sub(value)                                         integer      integer
-table_bytes_in_rate(table)                         string       integer
-table_bytes_out_rate(table)                        string       integer
-table_conn_cnt(table)                              string       integer
+table_bytes_in_rate([table])                       any          integer
+table_bytes_out_rate([table])                      any          integer
+table_clr_gpc(idx[,table])                         any          integer
+table_clr_gpc0([table])                            any          integer
+table_clr_gpc1([table])                            any          integer
+table_conn_cnt([table])                            any          integer
 -- keyword -------------------------------------+- input type + output type -
-table_conn_cur(table)                              string       integer
-table_conn_rate(table)                             string       integer
-table_expire(table[,default_value])                string       integer
-table_glitch_cnt(table)                            string       integer
-table_glitch_rate(table)                           string       integer
-table_gpc(idx,table)                               string       integer
-table_gpc0(table)                                  string       integer
-table_gpc0_rate(table)                             string       integer
-table_gpc1(table)                                  string       integer
-table_gpc1_rate(table)                             string       integer
-table_gpc_rate(idx,table)                          string       integer
-table_gpt(idx,table)                               string       integer
-table_gpt0(table)                                  string       integer
-table_http_err_cnt(table)                          string       integer
-table_http_err_rate(table)                         string       integer
-table_http_fail_cnt(table)                         string       integer
-table_http_fail_rate(table)                        string       integer
-table_http_req_cnt(table)                          string       integer
-table_http_req_rate(table)                         string       integer
-table_idle(table[,default_value])                  string       integer
-table_kbytes_in(table)                             string       integer
+table_conn_cur([table])                            any          integer
+table_conn_rate([table])                           any          integer
+table_expire([table[,default_value]])              any          integer
+table_glitch_cnt([table])                          any          integer
+table_glitch_rate([table])                         any          integer
+table_gpc(idx[,table])                             any          integer
+table_gpc0([table])                                any          integer
+table_gpc0_rate([table])                           any          integer
+table_gpc1([table])                                any          integer
+table_gpc1_rate([table])                           any          integer
+table_gpc_rate(idx[,table])                        any          integer
+table_gpt(idx[,table])                             any          integer
+table_gpt0([table])                                any          integer
+table_http_err_cnt([table])                        any          integer
+table_http_err_rate([table])                       any          integer
+table_http_fail_cnt([table])                       any          integer
+table_http_fail_rate([table])                      any          integer
+table_http_req_cnt([table])                        any          integer
+table_http_req_rate([table])                       any          integer
+table_idle([table[,default_value]])                any          integer
+table_inc_gpc(idx[,table])                         any          integer
+table_inc_gpc0([table])                            any          integer
+table_inc_gpc1([table])                            any          integer
+table_kbytes_in([table])                           any          integer
 -- keyword -------------------------------------+- input type + output type -
-table_kbytes_out(table)                            string       integer
-table_server_id(table)                             string       integer
-table_sess_cnt(table)                              string       integer
-table_sess_rate(table)                             string       integer
-table_trackers(table)                              string       integer
+table_kbytes_out([table])                          any          integer
+table_server_id([table])                           any          integer
+table_sess_cnt([table])                            any          integer
+table_sess_rate([table])                           any          integer
+table_trackers([table])                            any          integer
 ub64dec                                            string       string
 ub64enc                                            string       string
-ungrpc(field_number,[field_type])                  binary       binary / int
+ungrpc(field_number[,field_type])                  binary       binary / int
 unset-var(var)                                      any          same
 upper                                              string       string
 url_dec([in_form])                                 string       string
@@ -20217,7 +20223,7 @@ add(<value>)
   result as a signed integer. <value> can be a numeric value or a variable
   name. See section 2.8 about variables for details.
 
-add_item(<delim>,[<var>][,<suff>]])
+add_item(<delim>[,<var>[,<suff>]])
   Concatenates a minimum of 2 and up to 3 fields after the current sample which
   is then turned into a string. The first one, <delim>, is a constant string,
   that will be appended immediately after the existing sample if an existing
@@ -20288,7 +20294,7 @@ base64
   an SSL ID can be copied in a header). For base64url("URL and Filename
   Safe Alphabet" (RFC 4648)) variant see "ub64enc".
 
-be2dec(<separator>,<chunk_size>,[<truncate>])
+be2dec(<separator>,<chunk_size>[,<truncate>])
   Converts big-endian binary input sample to a string containing an unsigned
   integer number per <chunk_size> input bytes. <separator> is put every
   <chunk_size> binary input bytes if specified. <truncate> flag indicates
@@ -20301,7 +20307,7 @@ be2dec(<separator>,<chunk_size>,[<truncate>])
       bin(01020304050607),be2dec(,2,1)  # 2587721286
       bin(7f000001),be2dec(.,1)         # 127.0.0.1
 
-be2hex([<separator>],[<chunk_size>],[<truncate>])
+be2hex([<separator>[,<chunk_size>[,<truncate>]]])
   Converts big-endian binary input sample to a hex string containing two hex
   digits per input byte. It is used to log or transfer hex dumps of some
   binary input data in a way that can be reliably transferred (e.g. an SSL ID
@@ -20356,7 +20362,7 @@ capture-res(<id>)
             "http-response capture", "capture.req.hdr" and
             "capture.res.hdr" (sample fetches).
 
-concat([<start>],[<var>],[<end>])
+concat([<start>[,<var>[,<end>]]])
   Concatenates up to 3 fields after the current sample which is then turned to
   a string. The first one, <start>, is a constant string, that will be appended
   immediately after the existing sample. It may be omitted if not used. The
@@ -20575,7 +20581,7 @@ htonl
   this converter is used, the input integer value is first casted to an
   unsigned 32-bit integer.
 
-http_date([<offset],[<unit>])
+http_date([<offset[,<unit>]])
   Converts an integer supposed to contain a date since epoch to a string
   representing this date in a format suitable for use in HTTP header fields. If
   an offset value is specified, then it is added to the date before the
@@ -20594,14 +20600,15 @@ iif(<true>,<false>)
   Example:
     http-request set-header x-forwarded-proto %[ssl_fc,iif(https,http)]
 
-in_table(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, a boolean false
-  is returned. Otherwise a boolean true is returned. This can be used to verify
-  the presence of a certain key in a table tracking some elements (e.g. whether
-  or not a source IP address or an Authorization header was already seen).
+in_table([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table, a
+  boolean false is returned. Otherwise a boolean true is returned. This can be
+  used to verify the presence of a certain key in a table tracking some
+  elements (e.g. whether or not a source IP address or an Authorization header
+  was already seen).
 
-ipmask(<mask4>,[<mask6>])
+ipmask(<mask4>[,<mask6>])
   Apply a mask to an IP address, and use the result for lookups and storage.
   This can be used to make all hosts within a certain mask to share the same
   table entries and as such use the same server. The mask4 can be passed in
@@ -20650,7 +20657,7 @@ json([<input-code>])
   Output log:
      {"ip":"127.0.0.1","user-agent":"Very \"Ugly\" UA 1\/2"}
 
-json_query(<json_path>,[<output_type>])
+json_query(<json_path>[,<output_type>])
   The json_query converter supports the JSON types string, boolean, number
   and array. Floating point numbers will be returned as a string. By
   specifying the output_type 'int' the value will be converted to an
@@ -20682,7 +20689,7 @@ json_query(<json_path>,[<output_type>])
      # get the value of the key 'iss' from a JWT Bearer token
      http-request set-var(txn.token_payload) req.hdr(Authorization),word(2,.),ub64dec,json_query('$.iss')
 
-jwt_header_query([<json_path>],[<output_type>])
+jwt_header_query([<json_path>[,<output_type>]])
   When given a JSON Web Token (JWT) in input, either returns the decoded header
   part of the token (the first base64-url encoded part of the JWT) if no
   parameter is given, or performs a json_query on the decoded header part of
@@ -20692,7 +20699,7 @@ jwt_header_query([<json_path>],[<output_type>])
   Please note that this converter is only available when HAProxy has been
   compiled with USE_OPENSSL.
 
-jwt_payload_query([<json_path>],[<output_type>])
+jwt_payload_query([<json_path>[,<output_type>]])
   When given a JSON Web Token (JWT) in input, either returns the decoded
   payload part of the token (the second base64-url encoded part of the JWT) if
   no parameter is given, or performs a json_query on the decoded payload part
@@ -21059,7 +21066,7 @@ or(<value>)
   integer, and returns the result as an signed integer. <value> can be a
   numeric value or a variable name. See section 2.8 about variables for details.
 
-param(<name>,[<delim>])
+param(<name>[,<delim>])
   This extracts the first occurrence of the parameter <name> in the input string
   where parameters are delimited by <delim>, which defaults to "&", and the name
   and value of the parameter are separated by a "=". If there is no "=" and
@@ -21096,7 +21103,7 @@ port_only
 
   See also: "host_only" converter which will return the host.
 
-protobuf(<field_number>,[<field_type>])
+protobuf(<field_number>[,<field_type>])
   This extracts the protocol buffers message field in raw mode of an input binary
   sample representation of a protocol buffer message with <field_number> as field
   number (dotted notation) if <field_type> is not present, or as an integer sample
@@ -21367,249 +21374,310 @@ sub(<value>)
   a constant, simply perform a "neg,add(value)". <value> can be a numeric value
   or a variable name. See section 2.8 about variables for details.
 
-table_bytes_in_rate(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the average client-to-server
-  bytes rate associated with the input sample in the designated table, measured
-  in amount of bytes over the period configured in the table. See also the
-  sc_bytes_in_rate sample fetch keyword.
+table_bytes_in_rate([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the average
+  client-to-server bytes rate associated with the input sample in the designated
+  table, measured in amount of bytes over the period configured in the table.
+  See also the sc_bytes_in_rate sample fetch keyword.
 
 
-table_bytes_out_rate(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the average server-to-client
-  bytes rate associated with the input sample in the designated table, measured
-  in amount of bytes over the period configured in the table. See also the
-  sc_bytes_out_rate sample fetch keyword.
+table_bytes_out_rate([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the average
+  server-to-client bytes rate associated with the input sample in the designated
+  table, measured in amount of bytes over the period configured in the table.
+  See also the sc_bytes_out_rate sample fetch keyword.
 
-table_conn_cnt(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the cumulative number of incoming
-  connections associated with the input sample in the designated table. See
-  also the sc_conn_cnt sample fetch keyword.
+table_clr_gpc(<idx>[,<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. Clears the General Purpose Counter at the
+  index <idx> of the gpc array and returns its previous value. <idx> is an
+  integer between 0 and 99. If the entry is not found, an entry is created and
+  0 is returned. This converter applies only to the 'gpc' array data_type (and
+  not to the legacy 'gpc0' nor 'gpc1' data_types).
+  See also the sc_clr_gpc sample fetch keyword.
 
-table_conn_cur(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the current amount of concurrent
-  tracked connections associated with the input sample in the designated table.
-  See also the sc_conn_cur sample fetch keyword.
+table_clr_gpc0([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. Clears the first General Purpose Counter
+  '0' and returns its previous value. If the entry is not found, an entry is
+  created and 0 is returned. This is typically used as a second ACL in an
+  expression in order to mark a connection when a first ACL was verified :
 
-table_conn_rate(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the average incoming connection
-  rate associated with the input sample in the designated table. See also the
-  sc_conn_rate sample fetch keyword.
+  Example:
+        # block if 5 consecutive requests continue to come faster than 10 sess
+        # per second, and reset the counter as soon as the traffic slows down.
+        acl abuse src_http_req_rate gt 10
+        acl kill  src,table_inc_gpc0 gt 5
+        acl save  src,table_clr_gpc0 ge 0
+        tcp-request connection accept if !abuse save
+        tcp-request connection reject if abuse kill
 
-table_expire(<table>[,<default_value>])
-  Uses the input sample to perform a look up in the specified table. If the key
-  is not found in the table, the converter fails except if <default_value> is
-  set: this makes the converter succeed and return <default_value>. If the key
-  is found the converter returns the key expiration delay associated with the
-  input sample in the designated table.
-  See also the table_idle sample fetch keyword.
+  See also the sc_clr_gpc0 sample fetch keyword.
 
-table_glitch_cnt(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the cumulative number of front
-  connection glitches associated with the input sample in the designated table.
-  See also the sc_glitch_cnt sample fetch keyword and fc_glitches for the value
-  measured on the current front connection.
+table_clr_gpc1([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. Clears the first General Purpose Counter
+  '1' and returns its previous value. If the entry is not found, an entry is
+  created and 0 is returned. This is typically used as a second ACL in an
+  expression in order to mark a connection when a first ACL was verified.
+  See also the sc_clr_gpc1 sample fetch keyword.
 
-table_glitch_rate(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the average front connection
-  glitch rate associated with the input sample in the designated table. See
-  also the sc_glitch_rate sample fetch keyword.
+table_conn_cnt([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the cumulative
+  number of incoming connections associated with the input sample in the
+  designated table. See also the sc_conn_cnt sample fetch keyword.
 
-table_gpc(<idx>,<table>)
-  Uses the string representation of the input sample to perform a lookup in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the current value of the
-  General Purpose Counter at the index <idx> of the array associated
-  to the input sample in the designated <table>. <idx> is an integer
-  between 0 and 99.
-  If there is no GPC stored at this index, it also returns the boolean value 0.
-  This applies only to the 'gpc' array data_type (and not to the legacy
-  'gpc0' nor 'gpc1' data_types).
-  See also the sc_get_gpc sample fetch keyword.
+table_conn_cur([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the current
+  amount of concurrent tracked connections associated with the input sample in
+  the designated table. See also the sc_conn_cur sample fetch keyword.
 
-table_gpc0(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the current value of the first
-  general purpose counter associated with the input sample in the designated
-  table. See also the sc_get_gpc0 sample fetch keyword.
+table_conn_rate([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the average
+  incoming connection rate associated with the input sample in the designated
+  table. See also the sc_conn_rate sample fetch keyword.
 
-table_gpc0_rate(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the frequency which the gpc0
-  counter was incremented over the configured period in the table, associated
-  with the input sample in the designated table. See also the sc_get_gpc0_rate
+table_expire([<table>[,<default_value>]])
+  Uses the input sample to perform a look up in in the current proxy's
+  stick-table or in the designated stick-table. If the key is not found in the
+  table, the converter fails except if <default_value> is set: this makes the
+  converter succeed and return <default_value>. If the key is found the
+  converter returns the key expiration delay associated with the input sample
+  in the designated table. See also the table_idle sample fetch keyword.
+
+table_glitch_cnt([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the cumulative
+  number of front connection glitches associated with the input sample in the
+  designated table. See also the sc_glitch_cnt sample fetch keyword and
+  fc_glitches for the value measured on the current front connection.
+
+table_glitch_rate([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the average
+  front connection glitch rate associated with the input sample in the
+  designated table. See also the sc_glitch_rate sample fetch keyword.
+
+table_gpc(<idx>[,<table>])
+  Uses the input sample to perform a lookup in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the current
+  value of the General Purpose Counter at the index <idx> of the array
+  associated to the input sample in the designated <table>. <idx> is an integer
+  between 0 and 99. If there is no GPC stored at this index, it also returns
+  the integer value 0. This applies only to the 'gpc' array data_type (and not
+  to the legacy 'gpc0' nor 'gpc1' data_types). See also the sc_get_gpc sample
+  fetch keyword.
+
+table_gpc0([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the current
+  value of the first general purpose counter associated with the input sample
+  in the designated table. See also the sc_get_gpc0 sample fetch keyword.
+
+table_gpc0_rate([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the frequency
+  which the gpc0 counter was incremented over the configured period in the
+  table, associated with the input sample in the designated table. See also the
+  sc_get_gpc0_rate sample fetch keyword.
+
+table_gpc1([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the current
+  value of the second general purpose counter associated with the input sample
+  in the designated table. See also the sc_get_gpc1 sample fetch keyword.
+
+table_gpc1_rate([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the frequency
+  which the gpc1 counter was incremented over the configured period in the
+  table, associated with the input sample in the designated table. See also the
+  sc_get_gpc1_rate sample fetch keyword.
+
+table_gpc_rate(<idx>[,<table>])
+  Uses the input sample to perform a lookup in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the frequency
+  which the Global Purpose Counter at index <idx> of the array (associated to
+  the input sample in the designated stick-table <table>) was incremented over
+  the configured period. <idx> is an integer between 0 and 99. If there is no
+  gpc_rate stored at this index, it also returns the integer value 0. This
+  applies only to the 'gpc_rate' array data_type (and not to the legacy
+  'gpc0_rate' nor 'gpc1_rate' data_types). See also the sc_gpc_rate sample
+  fetch keyword.
+
+table_gpt(<idx>[,<table>])
+  Uses the input sample to perform a lookup in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the current
+  value of the general purpose tag at the index <idx> of the array associated
+  to the input sample in the designated <table>. <idx> is an integer between
+  0 and 99. If there is no GPT stored at this index, it also returns the
+  integer value 0. This applies only to the 'gpt' array data_type (and not on
+  the legacy 'gpt0' data-type). See also the sc_get_gpt sample fetch keyword.
+
+table_gpt0([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the current
+  value of the first general purpose tag associated with the input sample in
+  the designated table. See also the sc_get_gpt0 sample fetch keyword.
+
+table_http_err_cnt([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the cumulative
+  number of HTTP errors associated with the input sample in the designated
+  table. See also the sc_http_err_cnt sample fetch keyword.
+
+table_http_err_rate([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the average rate of HTTP errors
+  associated with the input sample in the designated table, measured in amount
+  of errors over the period configured in the table. See also the
+  sc_http_err_rate sample fetch keyword.
+
+table_http_fail_cnt([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the cumulative
+  number of HTTP failures associated with the input sample in the designated
+  table. See also the sc_http_fail_cnt sample fetch keyword.
+
+table_http_fail_rate([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the average rate of HTTP failures
+  associated with the input sample in the designated table, measured in amount
+  of failures over the period configured in the table. See also the
+  sc_http_fail_rate sample fetch keyword.
+
+table_http_req_cnt([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the cumulative
+  number of HTTP requests associated with the input sample in the designated
+  table. See also the sc_http_req_cnt sample fetch keyword.
+
+table_http_req_rate([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the average rate of HTTP requests
+  associated with the input sample in the designated table, measured in amount
+  of requests over the period configured in the table. See also the
+  sc_http_req_rate sample fetch keyword.
+
+table_idle([<table>[,<default_value>]])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table, the
+  converter fails except if <default_value> is set: this makes the converter
+  succeed and return <default_value>. If the key is found the converter returns
+  the time the key entry associated with the input sample in the designated
+  table remained idle since the last time it was updated. See also the
+  table_expire sample fetch keyword.
+
+table_inc_gpc(<idx>[,<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. Increments the General Purpose Counter at
+  index <idx> of the array and returns its new value. <idx> is an integer
+  between 0 and 99. If the entry is not found, an entry is created and 1 is
+  returned. This converter applies only to the 'gpc' array data_type (and not to
+  the legacy 'gpc0' nor 'gpc1' data_types). See also sc_inc_gpc.
+
+table_inc_gpc0([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. Increments the General Purpose Counter '0'
+  and returns its new value. If the entry is not found, an entry is created and
+  1 is returned. See also sc0/sc2/sc2_inc_gpc0. This is typically used as a
+  second ACL in an expression in order to mark a connection when a first ACL
+  was verified :
+
+  Example:
+        acl abuse src,table_req_rate gt 10
+        acl kill  src,table_inc_gpc0 gt 0
+        tcp-request connection reject if abuse kill
+
+table_inc_gpc1([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. Increments the General Purpose Counter '1'
+  and returns its new value. If the entry is not found, an entry is created and
+  1 is returned. See also sc0/sc2/sc2_inc_gpc1. This is typically used as a
+  second ACL in an expression in order to mark a connection when a first ACL
+  was verified.
+
+table_kbytes_in([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the cumulative
+  number of client-to-server data associated with the input sample in the
+  designated table, measured in kilobytes. The test is currently performed on
+  32-bit integers, which limits values to 4 terabytes. See also the sc_kbytes_in
   sample fetch keyword.
 
-table_gpc1(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the current value of the second
-  general purpose counter associated with the input sample in the designated
-  table. See also the sc_get_gpc1 sample fetch keyword.
+table_kbytes_out([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the cumulative
+  number of server-to-client data associated with the input sample in the
+  designated table, measured in kilobytes. The test is currently performed on
+  32-bit integers, which limits values to 4 terabytes. See also the
+  sc_kbytes_out sample fetch keyword.
 
-table_gpc1_rate(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the frequency which the gpc1
-  counter was incremented over the configured period in the table, associated
-  with the input sample in the designated table. See also the sc_get_gpc1_rate
+table_server_id([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the server ID
+  associated with the input sample in the designated table. A server ID is
+  associated to a sample by a "stick" rule when a connection to a server
+  succeeds. A server ID zero means that no server is associated with this key.
+
+table_sess_cnt([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the cumulative
+  number of incoming sessions associated with the input sample in the designated
+  table. Note that a session here refers to an incoming connection being
+  accepted by the "tcp-request connection" rulesets. See also the sc_sess_cnt
   sample fetch keyword.
 
-table_gpc_rate(<idx>,<table>)
-  Uses the string representation of the input sample to perform a lookup in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the frequency which the Global
-  Purpose Counter at index <idx> of the array (associated to the input sample
-  in the designated stick-table <table>) was incremented over the
-  configured period. <idx> is an integer between 0 and 99.
-  If there is no gpc_rate stored at this index, it also returns the boolean
-  value 0.
-  This applies only to the 'gpc_rate' array data_type (and not to the
-  legacy 'gpc0_rate' nor 'gpc1_rate' data_types).
-  See also the sc_gpc_rate sample fetch keyword.
+table_sess_rate([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the average
+  incoming session rate associated with the input sample in the designated
+  table. Note that a session here refers to an incoming connection being
+  accepted by the "tcp-request connection" rulesets. See also the sc_sess_rate
+  sample fetch keyword.
 
-table_gpt(<idx>,<table>)
-  Uses the string representation of the input sample to perform a lookup in
-  the specified table. If the key is not found in the table, boolean value zero
-  is returned. Otherwise the converter returns the current value of the general
-  purpose tag at the index <idx> of the array associated to the input sample
-  in the designated <table>. <idx> is an integer between 0 and 99.
-  If there is no GPT stored at this index, it also returns the boolean value 0.
-  This applies only to the 'gpt' array data_type (and not on the legacy 'gpt0'
-  data-type).
-  See also the sc_get_gpt sample fetch keyword.
-
-table_gpt0(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, boolean value zero
-  is returned. Otherwise the converter returns the current value of the first
-  general purpose tag associated with the input sample in the designated table.
-  See also the sc_get_gpt0 sample fetch keyword.
-
-table_http_err_cnt(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the cumulative number of HTTP
-  errors associated with the input sample in the designated table. See also the
-  sc_http_err_cnt sample fetch keyword.
-
-table_http_err_rate(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the average rate of HTTP errors associated with the
-  input sample in the designated table, measured in amount of errors over the
-  period configured in the table. See also the sc_http_err_rate sample fetch
-  keyword.
-
-table_http_fail_cnt(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the cumulative number of HTTP
-  failures associated with the input sample in the designated table. See also
-  the sc_http_fail_cnt sample fetch keyword.
-
-table_http_fail_rate(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the average rate of HTTP failures associated with the
-  input sample in the designated table, measured in amount of failures over the
-  period configured in the table. See also the sc_http_fail_rate sample fetch
-  keyword.
-
-table_http_req_cnt(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the cumulative number of HTTP
-  requests associated with the input sample in the designated table. See also
-  the sc_http_req_cnt sample fetch keyword.
-
-table_http_req_rate(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the average rate of HTTP requests associated with the
-  input sample in the designated table, measured in amount of requests over the
-  period configured in the table. See also the sc_http_req_rate sample fetch
-  keyword.
-
-table_idle(<table>[,<default_value>])
-  Uses the input sample to perform a look up in the specified table. If the key
-  is not found in the table, the converter fails except if <default_value> is
-  set: this makes the converter succeed and return <default_value>. If the key
-  is found the converter returns the time the key entry associated with the
-  input sample in the designated table remained idle since the last time it was
-  updated.
-  See also the table_expire sample fetch keyword.
-
-table_kbytes_in(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the cumulative number of client-
-  to-server data associated with the input sample in the designated table,
-  measured in kilobytes. The test is currently performed on 32-bit integers,
-  which limits values to 4 terabytes. See also the sc_kbytes_in sample fetch
-  keyword.
-
-table_kbytes_out(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the cumulative number of server-
-  to-client data associated with the input sample in the designated table,
-  measured in kilobytes. The test is currently performed on 32-bit integers,
-  which limits values to 4 terabytes. See also the sc_kbytes_out sample fetch
-  keyword.
-
-table_server_id(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the server ID associated with
-  the input sample in the designated table. A server ID is associated to a
-  sample by a "stick" rule when a connection to a server succeeds. A server ID
-  zero means that no server is associated with this key.
-
-table_sess_cnt(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the cumulative number of incoming
-  sessions associated with the input sample in the designated table. Note that
-  a session here refers to an incoming connection being accepted by the
-  "tcp-request connection" rulesets. See also the sc_sess_cnt sample fetch
-  keyword.
-
-table_sess_rate(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the average incoming session
-  rate associated with the input sample in the designated table. Note that a
-  session here refers to an incoming connection being accepted by the
-  "tcp-request connection" rulesets. See also the sc_sess_rate sample fetch
-  keyword.
-
-table_trackers(<table>)
-  Uses the string representation of the input sample to perform a look up in
-  the specified table. If the key is not found in the table, integer value zero
-  is returned. Otherwise the converter returns the current amount of concurrent
-  connections tracking the same key as the input sample in the designated
-  table. It differs from table_conn_cur in that it does not rely on any stored
-  information but on the table's reference count (the "use" value which is
-  returned by "show table" on the CLI). This may sometimes be more suited for
-  layer7 tracking. It can be used to tell a server how many concurrent
-  connections there are from a given address for example. See also the
-  sc_trackers sample fetch keyword.
+table_trackers([<table>])
+  Uses the input sample to perform a look up in the current proxy's stick-table
+  or in the designated stick-table. If the key is not found in the table,
+  integer value zero is returned. Otherwise the converter returns the current
+  amount of concurrent connections tracking the same key as the input sample
+  in the designated table. It differs from table_conn_cur in that it does not
+  rely on any stored information but on the table's reference count (the "use"
+  value which is returned by "show table" on the CLI). This may sometimes be
+  more suited for layer7 tracking. It can be used to tell a server how many
+  concurrent connections there are from a given address for example. See also
+  the sc_trackers sample fetch keyword.
 
 ub64dec
   This converter is the base64url variant of b64dec converter. base64url
@@ -21623,7 +21691,7 @@ ub64dec
 ub64enc
   This converter is the base64url variant of base64 converter.
 
-ungrpc(<field_number>,[<field_type>])
+ungrpc(<field_number>[,<field_type>])
   This extracts the protocol buffers message field in raw mode of an input binary
   sample representation of a gRPC message with <field_number> as field number
   (dotted notation) if <field_type> is not present, or as an integer sample if this
@@ -21964,7 +22032,7 @@ connslots([<backend>])                             integer
 cpu_calls                                          integer
 cpu_ns_avg                                         integer
 cpu_ns_tot                                         integer
-date([<offset>],[<unit>])                          integer
+date([<offset>[,<unit>]])                          integer
 date_us                                            integer
 env(<name>)                                        string
 fe_conn([<frontend>])                              integer
@@ -22152,7 +22220,7 @@ cpu_ns_tot : integer
   high cpu_calls count, for example when processing many HTTP chunks, and for
   this reason it is often preferred to log cpu_ns_avg instead.
 
-date([<offset>],[<unit>]) : integer
+date([<offset>[,<unit>]]) : integer
   Returns the current date as the epoch (number of seconds since 01/01/1970).
 
   If an offset value is specified, then it is added to the current date before
@@ -22471,11 +22539,11 @@ str(<string>) : string
 
 table_avl([<table>]) : integer
   Returns the total number of available entries in the current proxy's
-  stick-table or in the designated stick-table. See also table_cnt.
+  stick-table or in the designated stick-table. See also "table_cnt".
 
 table_cnt([<table>]) : integer
   Returns the total number of entries currently in use in the current proxy's
-  stick-table or in the designated stick-table. See also src_conn_cnt and
+  stick-table or in the designated stick-table. See also "table_conn_cnt" and
   table_avl for other entry counting methods.
 
 thread : integer
@@ -22773,13 +22841,13 @@ so_name                                            string
 src                                                ip
 src_bytes_in_rate([<table>])                       integer
 src_bytes_out_rate([<table>])                      integer
-src_clr_gpc(<idx>,[<table>])                       integer
+src_clr_gpc(<idx>[,<table>])                       integer
 src_clr_gpc0([<table>])                            integer
 src_clr_gpc1([<table>])                            integer
 src_conn_cnt([<table>])                            integer
 src_conn_cur([<table>])                            integer
 src_conn_rate([<table>])                           integer
-src_get_gpc(<idx>,[<table>])                       integer
+src_get_gpc(<idx>[,<table>])                       integer
 src_get_gpc0([<table>])                            integer
 src_get_gpc1([<table>])                            integer
 src_get_gpt(<idx>[,<table>])                       integer
@@ -22795,7 +22863,7 @@ src_http_fail_cnt([<table>])                       integer
 src_http_fail_rate([<table>])                      integer
 src_http_req_cnt([<table>])                        integer
 src_http_req_rate([<table>])                       integer
-src_inc_gpc(<idx>,[<table>])                       integer
+src_inc_gpc(<idx>[,<table>])                       integer
 src_inc_gpc0([<table>])                            integer
 src_inc_gpc1([<table>])                            integer
 src_is_local                                       boolean
@@ -23285,7 +23353,7 @@ sc1_bytes_in_rate([<table>]) : integer
 sc2_bytes_in_rate([<table>]) : integer
   Returns the average client-to-server bytes rate from the currently tracked
   counters, measured in amount of bytes over the period configured in the
-  table. See also src_bytes_in_rate.
+  table. See also "table_bytes_in_rate".
 
 sc_bytes_out_rate(<ctr>[,<table>]) : integer
 sc0_bytes_out_rate([<table>]) : integer
@@ -23293,7 +23361,7 @@ sc1_bytes_out_rate([<table>]) : integer
 sc2_bytes_out_rate([<table>]) : integer
   Returns the average server-to-client bytes rate from the currently tracked
   counters, measured in amount of bytes over the period configured in the
-  table. See also src_bytes_out_rate.
+  table. See also "table_bytes_out_rate".
 
 sc_clr_gpc(<idx>,<ctr>[,<table>]) : integer
   Clears the General Purpose Counter at the index <idx> of the array
@@ -23340,7 +23408,7 @@ sc0_conn_cnt([<table>]) : integer
 sc1_conn_cnt([<table>]) : integer
 sc2_conn_cnt([<table>]) : integer
   Returns the cumulative number of incoming connections from currently tracked
-  counters. See also src_conn_cnt.
+  counters. See also "table_conn_cnt".
 
 sc_conn_cur(<ctr>[,<table>]) : integer
 sc0_conn_cur([<table>]) : integer
@@ -23348,7 +23416,7 @@ sc1_conn_cur([<table>]) : integer
 sc2_conn_cur([<table>]) : integer
   Returns the current amount of concurrent connections tracking the same
   tracked counters. This number is automatically incremented when tracking
-  begins and decremented when tracking stops. See also src_conn_cur.
+  begins and decremented when tracking stops. See also "table_conn_cur".
 
 sc_conn_rate(<ctr>[,<table>]) : integer
 sc0_conn_rate([<table>]) : integer
@@ -23356,7 +23424,7 @@ sc1_conn_rate([<table>]) : integer
 sc2_conn_rate([<table>]) : integer
   Returns the average connection rate from the currently tracked counters,
   measured in amount of connections over the period configured in the table.
-  See also src_conn_rate.
+  See also "table_conn_rate".
 
 sc_get_gpc(<idx>,<ctr>[,<table>]) : integer
   Returns the value of the General Purpose Counter at the index <idx>
@@ -23366,21 +23434,21 @@ sc_get_gpc(<idx>,<ctr>[,<table>]) : integer
   <ctr> an integer between 0 and 2. If there is not gpc stored at this
   index, zero is returned.
   This fetch applies only to the 'gpc' array data_type (and not to the legacy
-  'gpc0' nor 'gpc1' data_types). See also src_get_gpc and sc_inc_gpc.
+  'gpc0' nor 'gpc1' data_types). See also "table_gpc" and "sc_inc_gpc".
 
 sc_get_gpc0(<ctr>[,<table>]) : integer
 sc0_get_gpc0([<table>]) : integer
 sc1_get_gpc0([<table>]) : integer
 sc2_get_gpc0([<table>]) : integer
   Returns the value of the first General Purpose Counter associated to the
-  currently tracked counters. See also src_get_gpc0 and sc/sc0/sc1/sc2_inc_gpc0.
+  currently tracked counters. See also "table_gpc0" and sc/sc0/sc1/sc2_inc_gpc0.
 
 sc_get_gpc1(<ctr>[,<table>]) : integer
 sc0_get_gpc1([<table>]) : integer
 sc1_get_gpc1([<table>]) : integer
 sc2_get_gpc1([<table>]) : integer
   Returns the value of the second General Purpose Counter associated to the
-  currently tracked counters. See also src_get_gpc1 and sc/sc0/sc1/sc2_inc_gpc1.
+  currently tracked counters. See also "table_gpc1" and sc/sc0/sc1/sc2_inc_gpc1.
 
 sc_get_gpt(<idx>,<ctr>[,<table>]) : integer
   Returns the value of the first General Purpose Tag at the index <idx> of
@@ -23389,14 +23457,14 @@ sc_get_gpt(<idx>,<ctr>[,<table>]) : integer
   is an integer between 0 and 99 and <ctr> an integer between 0 and 2.
   If there is no GPT stored at this index, zero is returned.
   This fetch applies only to the 'gpt' array data_type (and not on
-  the legacy 'gpt0' data-type). See also src_get_gpt.
+  the legacy 'gpt0' data-type). See also "table_gpt".
 
 sc_get_gpt0(<ctr>[,<table>]) : integer
 sc0_get_gpt0([<table>]) : integer
 sc1_get_gpt0([<table>]) : integer
 sc2_get_gpt0([<table>]) : integer
   Returns the value of the first General Purpose Tag associated to the
-  currently tracked counters. See also src_get_gpt0.
+  currently tracked counters. See also "table_gpt0".
 
 sc_glitch_cnt(<ctr>[,<table>]) : integer
 sc0_glitch_cnt([<table>]) : integer
@@ -23424,7 +23492,7 @@ sc2_glitch_rate([<table>]) : integer
   occasionally cause a few glitches per connection, hence a low rate is
   generally expected. However, a very bogus or malevolent client may quickly
   cause thousands of events to be added per connection, and maintain a high
-  rate here. See also src_glitch_rate and sc_glitch_cnt.
+  rate here. See also "table_glitch_rate" and "sc_glitch_cnt".
 
 sc_gpc_rate(<idx>,<ctr>[,<table>]) : integer
   Returns the average increment rate of the General Purpose Counter at the
@@ -23437,7 +23505,7 @@ sc_gpc_rate(<idx>,<ctr>[,<table>]) : integer
   for a value to be returned, as 'gpc' only holds the event count.
   This fetch applies only to the 'gpc_rate' array data_type (and not to
   the legacy 'gpc0_rate' nor 'gpc1_rate' data_types).
-  See also src_gpc_rate, sc_get_gpc, and sc_inc_gpc.
+  See also "table_gpc_rate", "sc_get_gpc", and "sc_inc_gpc".
 
 sc_gpc0_rate(<ctr>[,<table>]) : integer
 sc0_gpc0_rate([<table>]) : integer
@@ -23467,7 +23535,7 @@ sc1_http_err_cnt([<table>]) : integer
 sc2_http_err_cnt([<table>]) : integer
   Returns the cumulative number of HTTP errors from the currently tracked
   counters. This includes the both request errors and 4xx error responses.
-  See also src_http_err_cnt.
+  See also "table_http_err_cnt".
 
 sc_http_err_rate(<ctr>[,<table>]) : integer
 sc0_http_err_rate([<table>]) : integer
@@ -23484,7 +23552,7 @@ sc1_http_fail_cnt([<table>]) : integer
 sc2_http_fail_cnt([<table>]) : integer
   Returns the cumulative number of HTTP response failures from the currently
   tracked counters. This includes the both response errors and 5xx status codes
-  other than 501 and 505. See also src_http_fail_cnt.
+  other than 501 and 505. See also "table_http_fail_cnt".
 
 sc_http_fail_rate(<ctr>[,<table>]) : integer
 sc0_http_fail_rate([<table>]) : integer
@@ -23493,7 +23561,7 @@ sc2_http_fail_rate([<table>]) : integer
   Returns the average rate of HTTP response failures from the currently tracked
   counters, measured in amount of failures over the period configured in the
   table. This includes the both response errors and 5xx status codes other than
-  501 and 505. See also src_http_fail_rate.
+  501 and 505. See also "table_http_fail_rate".
 
 sc_http_req_cnt(<ctr>[,<table>]) : integer
 sc0_http_req_cnt([<table>]) : integer
@@ -23554,7 +23622,7 @@ sc1_kbytes_in([<table>]) : integer
 sc2_kbytes_in([<table>]) : integer
   Returns the total amount of client-to-server data from the currently tracked
   counters, measured in kilobytes. The test is currently performed on 32-bit
-  integers, which limits values to 4 terabytes. See also src_kbytes_in.
+  integers, which limits values to 4 terabytes. See also "table_kbytes_in".
 
 sc_kbytes_out(<ctr>[,<table>]) : integer
 sc0_kbytes_out([<table>]) : integer
@@ -23562,7 +23630,7 @@ sc1_kbytes_out([<table>]) : integer
 sc2_kbytes_out([<table>]) : integer
   Returns the total amount of server-to-client data from the currently tracked
   counters, measured in kilobytes. The test is currently performed on 32-bit
-  integers, which limits values to 4 terabytes. See also src_kbytes_out.
+  integers, which limits values to 4 terabytes. See also "table_kbytes_out".
 
 sc_key(<ctr>) : any
 sc0_key : any
@@ -23579,7 +23647,7 @@ sc2_sess_cnt([<table>]) : integer
   connection" rule, from the currently tracked counters. A backend may count
   more sessions than connections because each connection could result in many
   backend sessions if some HTTP keep-alive is performed over the connection
-  with the client. See also src_sess_cnt.
+  with the client. See also "table_sess_cnt".
 
 sc_sess_rate(<ctr>[,<table>]) : integer
 sc0_sess_rate([<table>]) : integer
@@ -23590,7 +23658,7 @@ sc2_sess_rate([<table>]) : integer
   session is a connection that got past the early "tcp-request connection"
   rules. A backend may count more sessions than connections because each
   connection could result in many backend sessions if some HTTP keep-alive is
-  performed over the connection with the client. See also src_sess_rate.
+  performed over the connection with the client. See also "table_sess_rate".
 
 sc_tracked(<ctr>[,<table>]) : boolean
 sc0_tracked([<table>]) : boolean
@@ -23645,232 +23713,166 @@ src : ip
        http-request set-header X-Country %[src,map_ip(geoip.lst)]
 
 src_bytes_in_rate([<table>]) : integer
-  Returns the average bytes rate from the incoming connection's source address
-  in the current proxy's stick-table or in the designated stick-table, measured
-  in amount of bytes over the period configured in the table. If the address is
-  not found, zero is returned. See also sc/sc0/sc1/sc2_bytes_in_rate.
+  Same as "table_bytes_in_rate" converter with key set to the incoming
+  connection's source address.
+
+  Equivalent to: src,table_bytes_in_rate([<table>])
 
 src_bytes_out_rate([<table>]) : integer
-  Returns the average bytes rate to the incoming connection's source address in
-  the current proxy's stick-table or in the designated stick-table, measured in
-  amount of bytes over the period configured in the table. If the address is
-  not found, zero is returned. See also sc/sc0/sc1/sc2_bytes_out_rate.
+  Same as "table_bytes_out_rate" converter with key set to the incoming
+  connection's source address.
 
-src_clr_gpc(<idx>,[<table>]) : integer
-  Clears the General Purpose Counter at the index <idx> of the array
-  associated to the incoming connection's source address in the current proxy's
-  stick-table or in the designated stick-table <table>, and returns its
-  previous value. <idx> is an integer between 0 and 99.
-  If the address is not found, an entry is created and 0 is returned.
-  This fetch applies only to the 'gpc' array data_type (and not to the legacy
-  'gpc0' nor 'gpc1' data_types).
-  See also sc_clr_gpc.
+  Equivalent to: src,table_bytes_out_rate([<table>])
+
+src_clr_gpc(<idx>[,<table>]) : integer
+  Same as "table_clr_gpc" converter with key set to the incoming
+  connection's source address.
+
+  Equivalent to: src,table_clr_gpc(<idx>[,<table>])
 
 src_clr_gpc0([<table>]) : integer
-  Clears the first General Purpose Counter associated to the incoming
-  connection's source address in the current proxy's stick-table or in the
-  designated stick-table, and returns its previous value. If the address is not
-  found, an entry is created and 0 is returned. This is typically used as a
-  second ACL in an expression in order to mark a connection when a first ACL
-  was verified :
+  Same as "table_clr_gpc0" converter with key set to the incoming
+  connection's source address.
 
-  Example:
-        # block if 5 consecutive requests continue to come faster than 10 sess
-        # per second, and reset the counter as soon as the traffic slows down.
-        acl abuse src_http_req_rate gt 10
-        acl kill  src_inc_gpc0 gt 5
-        acl save  src_clr_gpc0 ge 0
-        tcp-request connection accept if !abuse save
-        tcp-request connection reject if abuse kill
+  Equivalent to: src,table_clr_gpc0([<table>])
 
 src_clr_gpc1([<table>]) : integer
-  Clears the second General Purpose Counter associated to the incoming
-  connection's source address in the current proxy's stick-table or in the
-  designated stick-table, and returns its previous value. If the address is not
-  found, an entry is created and 0 is returned. This is typically used as a
-  second ACL in an expression in order to mark a connection when a first ACL
-  was verified.
+  Same as "table_clr_gpc1" converter with key set to the incoming
+  connection's source address.
+
+  Equivalent to: src,table_clr_gpc1([<table>])
 
 src_conn_cnt([<table>]) : integer
-  Returns the cumulative number of connections initiated from the current
-  incoming connection's source address in the current proxy's stick-table or in
-  the designated stick-table. If the address is not found, zero is returned.
-  See also sc/sc0/sc1/sc2_conn_cnt.
+  Same as "table_conn_cnt" converter with key set to the incoming
+  connection's source address.
+
+  Equivalent to: src,table_conn_cnt([<table>])
 
 src_conn_cur([<table>]) : integer
-  Returns the current amount of concurrent connections initiated from the
-  current incoming connection's source address in the current proxy's
-  stick-table or in the designated stick-table. If the address is not found,
-  zero is returned. See also sc/sc0/sc1/sc2_conn_cur.
+  Same as "table_conn_cur" converter with key set to the incoming
+  connection's source address.
+
+  Equivalent to: src,table_conn_cur([<table>])
 
 src_conn_rate([<table>]) : integer
-  Returns the average connection rate from the incoming connection's source
-  address in the current proxy's stick-table or in the designated stick-table,
-  measured in amount of connections over the period configured in the table. If
-  the address is not found, zero is returned. See also sc/sc0/sc1/sc2_conn_rate.
+  Same as "table_conn_rate" converter with key set to the incoming
+  connection's source address.
 
-src_get_gpc(<idx>,[<table>]) : integer
-  Returns the value of the General Purpose Counter at the index <idx> of the
-  array associated to the incoming connection's source address in the
-  current proxy's stick-table or in the designated stick-table <table>. <idx>
-  is an integer between 0 and 99.
-  If the address is not found or there is no gpc stored at this index, zero
-  is returned.
-  This fetch applies only to the 'gpc' array data_type (and not on the legacy
-  'gpc0' nor 'gpc1' data_types).
-  See also sc_get_gpc and src_inc_gpc.
+  Equivalent to: src,table_conn_rate([<table>])
+
+src_get_gpc(<idx>[,<table>]) : integer
+  Same as "table_gpc" converter with key set to the incoming connection's
+  source address.
+
+  Equivalent to: src,table_gpc(<idx>[,<table>])
 
 src_get_gpc0([<table>]) : integer
-  Returns the value of the first General Purpose Counter associated to the
-  incoming connection's source address in the current proxy's stick-table or in
-  the designated stick-table. If the address is not found, zero is returned.
-  See also sc/sc0/sc1/sc2_get_gpc0 and src_inc_gpc0.
+  Same as "table_gpc0" converter with key set to the incoming connection's
+  source address.
+
+  Equivalent to: src,table_gpc0([<table>])
 
 src_get_gpc1([<table>]) : integer
-  Returns the value of the second General Purpose Counter associated to the
-  incoming connection's source address in the current proxy's stick-table or in
-  the designated stick-table. If the address is not found, zero is returned.
-  See also sc/sc0/sc1/sc2_get_gpc1 and src_inc_gpc1.
+  Same as "table_gpc1" converter with key set to the incoming connection's
+  source address.
+
+  Equivalent to: src,table_gpc1([<table>])
 
 src_get_gpt(<idx>[,<table>]) : integer
-  Returns the value of the first General Purpose Tag at the index <idx> of
-  the array associated to the incoming connection's source address in the
-  current proxy's stick-table or in the designated stick-table <table>.
-  <idx> is an integer between 0 and 99.
-  If the address is not found or the GPT is not stored, zero is returned.
-  See also the sc_get_gpt sample fetch keyword.
+  Same as "table_gpt" converter with key set to the incoming connection's
+  source address.
+
+  Equivalent to: src,table_gpt(<idx>[,<table>])
 
 src_get_gpt0([<table>]) : integer
-  Returns the value of the first General Purpose Tag associated to the
-  incoming connection's source address in the current proxy's stick-table or in
-  the designated stick-table. If the address is not found, zero is returned.
-  See also sc/sc0/sc1/sc2_get_gpt0.
+  Same as "table_gpt0" converter with key set to the incoming connection's
+  source address.
+
+  Equivalent to: src,table_gpt0([<table>])
 
 src_glitch_cnt([<table>]) : integer
-  Returns the cumulative number of front connection glitches that were observed
-  on connections from the current connection's source address. Usually these
-  result in requests or connections to be aborted so the returned value will
-  often correspond to past connections. There is no good nor bad value, but a
-  poor quality client may occasionally cause a few glitches per connection,
-  while a very bogus or malevolent client may quickly cause thousands of events
-  to be added on a connection. See also fc_glitches for the number affecting
-  the current connection, sc_glitch_cnt to look them up in currently tracked
-  counters, and src_glitch_rate for the event rate measurements.
+  Same as "table_glitch_cnt" converter with key set to the incoming
+  connection's source address.
+
+  Equivalent to: src,table_glitch_cnt([<table>])
 
 src_glitch_rate([<table>]) : integer
-  Returns the average rate at which front connection glitches were observed for
-  on connections from the current connection's source address, measured in
-  amount of events over the period configured in the table. Usually these
-  glitches result in requests or connections to be aborted so the returned
-  value will often be related to past connections. There is no good nor bad
-  value, but a poor quality client may occasionally cause a few glitches per
-  connection, hence a low rate is generally expected. However, a very bogus or
-  malevolent client may quickly cause thousands of events to be added per
-  connection, and maintain a high rate here. See also sc_glitch_rate and
-  src_glitch_cnt.
+  Same as "table_glitch_rate" converter with key set to the incoming
+  connection's source address.
+
+  Equivalent to: src,table_glitch_rate([<table>])
 
 src_gpc_rate(<idx>[,<table>]) : integer
-  Returns the average increment rate of the General Purpose Counter at the
-  index <idx> of the array associated to the incoming connection's
-  source address in the current proxy's stick-table or in the designated
-  stick-table <table>. It reports the frequency which the gpc counter was
-  incremented over the configured period. <idx> is an integer between 0 and 99.
-  Note that the 'gpc_rate' counter must be stored in the stick-table for a
-  value to be returned, as 'gpc' only holds the event count.
-  This fetch applies only to the 'gpc_rate' array data_type (and not to
-  the legacy 'gpc0_rate' nor 'gpc1_rate' data_types).
-  See also sc_gpc_rate, src_get_gpc, and sc_inc_gpc.
+  Same as "table_gpc_rate" converter with key set to the incoming connection's
+  source address.
+
+  Equivalent to: src,table_gpc_rate(<idx>[,<table>])
 
 src_gpc0_rate([<table>]) : integer
-  Returns the average increment rate of the first General Purpose Counter
-  associated to the incoming connection's source address in the current proxy's
-  stick-table or in the designated stick-table. It reports the frequency
-  which the gpc0 counter was incremented over the configured period. See also
-  sc/sc0/sc1/sc2_gpc0_rate, src_get_gpc0, and sc/sc0/sc1/sc2_inc_gpc0. Note
-  that the "gpc0_rate" counter must be stored in the stick-table for a value to
-  be returned, as "gpc0" only holds the event count.
+  Same as "table_gpc0_rate" converter with key set to the incoming connection's
+  source address.
+
+  Equivalent to: src,table_gpc0_rate([<table>])
 
 src_gpc1_rate([<table>]) : integer
-  Returns the average increment rate of the second General Purpose Counter
-  associated to the incoming connection's source address in the current proxy's
-  stick-table or in the designated stick-table. It reports the frequency
-  which the gpc1 counter was incremented over the configured period. See also
-  sc/sc0/sc1/sc2_gpc1_rate, src_get_gpc1, and sc/sc0/sc1/sc2_inc_gpc1. Note
-  that the "gpc1_rate" counter must be stored in the stick-table for a value to
-  be returned, as "gpc1" only holds the event count.
+  Same as "table_gpc1_rate" converter with key set to the incoming connection's
+  source address.
+
+  Equivalent to: src,table_gpc1_rate([<table>])
 
 src_http_err_cnt([<table>]) : integer
-  Returns the cumulative number of HTTP errors from the incoming connection's
-  source address in the current proxy's stick-table or in the designated
-  stick-table. This includes the both request errors and 4xx error responses.
-  See also sc/sc0/sc1/sc2_http_err_cnt. If the address is not found, zero is
-  returned.
+  Same as "table_http_err_cnt" converter with key set to the incoming
+  connection's source address.
+
+  Equivalent to: src,table_http_err_cnt([<table>])
 
 src_http_err_rate([<table>]) : integer
-  Returns the average rate of HTTP errors from the incoming connection's source
-  address in the current proxy's stick-table or in the designated stick-table,
-  measured in amount of errors over the period configured in the table. This
-  includes the both request errors and 4xx error responses. If the address is
-  not found, zero is returned. See also sc/sc0/sc1/sc2_http_err_rate.
+  Same as "table_http_err_rate" converter with key set to the incoming
+  connection's source address.
+
+  Equivalent to: src,table_http_err_rate([<table>])
 
 src_http_fail_cnt([<table>]) : integer
-  Returns the cumulative number of HTTP response failures triggered by the
-  incoming connection's source address in the current proxy's stick-table or in
-  the designated stick-table. This includes the both response errors and 5xx
-  status codes other than 501 and 505. See also sc/sc0/sc1/sc2_http_fail_cnt.
-  If the address is not found, zero is returned.
+  Same as "table_http_fail_cnt" converter with key set to the incoming
+  connection's source address.
+
+  Equivalent to: src,table_http_fail_cnt([<table>])
 
 src_http_fail_rate([<table>]) : integer
-  Returns the average rate of HTTP response failures triggered by the incoming
-  connection's source address in the current proxy's stick-table or in the
-  designated stick-table, measured in amount of failures over the period
-  configured in the table. This includes the both response errors and 5xx
-  status codes other than 501 and 505. If the address is not found, zero is
-  returned. See also sc/sc0/sc1/sc2_http_fail_rate.
+  Same as "table_http_fail_rate" converter with key set to the incoming
+  connection's source address.
+
+  Equivalent to: src,table_http_fail_rate([<table>])
 
 src_http_req_cnt([<table>]) : integer
-  Returns the cumulative number of HTTP requests from the incoming connection's
-  source address in the current proxy's stick-table or in the designated stick-
-  table. This includes every started request, valid or not. If the address is
-  not found, zero is returned. See also sc/sc0/sc1/sc2_http_req_cnt.
+  Same as "table_http_req_cnt" converter with key set to the incoming
+  connection's source address.
+
+  Equivalent to: src,table_http_req_cnt([<table>])
 
 src_http_req_rate([<table>]) : integer
-  Returns the average rate of HTTP requests from the incoming connection's
-  source address in the current proxy's stick-table or in the designated stick-
-  table, measured in amount of requests over the period configured in the
-  table. This includes every started request, valid or not. If the address is
-  not found, zero is returned. See also sc/sc0/sc1/sc2_http_req_rate.
+  Same as "table_http_req_rate" converter with key set to the incoming
+  connection's source address.
 
-src_inc_gpc(<idx>,[<table>]) : integer
-  Increments the General Purpose Counter at index <idx> of the array
-  associated to the incoming connection's source address in the current proxy's
-  stick-table or in the designated stick-table <table>, and returns its new
-  value. <idx> is an integer between 0 and 99.
-  If the address is not found, an entry is created and 1 is returned.
-  This fetch applies only to the 'gpc' array data_type (and not to the legacy
-  'gpc0' nor 'gpc1' data_types).
-  See also sc_inc_gpc.
+  Equivalent to: src,table_http_req_rate([<table>])
+
+src_inc_gpc(<idx>[,<table>]) : integer
+  Same as "src_inc_gpc" converter with key set to the incoming
+  connection's source address.
+
+  Equivalent to: src,table_inc_gpc(<idx>[,<table>])
 
 src_inc_gpc0([<table>]) : integer
-  Increments the first General Purpose Counter associated to the incoming
-  connection's source address in the current proxy's stick-table or in the
-  designated stick-table, and returns its new value. If the address is not
-  found, an entry is created and 1 is returned. See also sc0/sc2/sc2_inc_gpc0.
-  This is typically used as a second ACL in an expression in order to mark a
-  connection when a first ACL was verified :
+  Same as "src_inc_gpc0" converter with key set to the incoming
+  connection's source address.
 
-  Example:
-        acl abuse src_http_req_rate gt 10
-        acl kill  src_inc_gpc0 gt 0
-        tcp-request connection reject if abuse kill
+  Equivalent to: src,table_inc_gpc0([<table>])
 
 src_inc_gpc1([<table>]) : integer
-  Increments the second General Purpose Counter associated to the incoming
-  connection's source address in the current proxy's stick-table or in the
-  designated stick-table, and returns its new value. If the address is not
-  found, an entry is created and 1 is returned. See also sc0/sc2/sc2_inc_gpc1.
-  This is typically used as a second ACL in an expression in order to mark a
-  connection when a first ACL was verified.
+  Same as "src_inc_gpc1" converter with key set to the incoming
+  connection's source address.
+
+  Equivalent to: src,table_inc_gpc1([<table>])
 
 src_is_local : boolean
   Returns true if the source address of the incoming connection is local to the
@@ -23882,18 +23884,16 @@ src_is_local : boolean
   once per connection.
 
 src_kbytes_in([<table>]) : integer
-  Returns the total amount of data received from the incoming connection's
-  source address in the current proxy's stick-table or in the designated
-  stick-table, measured in kilobytes. If the address is not found, zero is
-  returned. The test is currently performed on 32-bit integers, which limits
-  values to 4 terabytes. See also sc/sc0/sc1/sc2_kbytes_in.
+  Same as "table_kbytes_in" converter with key set to the incoming connection's
+  source address.
+
+  Equivalent to: src,table_kbytes_in([<table>])
 
 src_kbytes_out([<table>]) : integer
-  Returns the total amount of data sent to the incoming connection's source
-  address in the current proxy's stick-table or in the designated stick-table,
-  measured in kilobytes. If the address is not found, zero is returned. The
-  test is currently performed on 32-bit integers, which limits values to 4
-  terabytes. See also sc/sc0/sc1/sc2_kbytes_out.
+  Same as "table_kbytes_out" converter with key set to the incoming connection's
+  source address.
+
+  Equivalent to: src,table_kbytes_out([<table>])
 
 src_port : integer
   Returns an integer value corresponding to the TCP source port of the
@@ -23903,18 +23903,16 @@ src_port : integer
   nowadays.
 
 src_sess_cnt([<table>]) : integer
-  Returns the cumulative number of connections initiated from the incoming
-  connection's source IPv4 address in the current proxy's stick-table or in the
-  designated stick-table, that were transformed into sessions, which means that
-  they were accepted by "tcp-request" rules. If the address is not found, zero
-  is returned. See also sc/sc0/sc1/sc2_sess_cnt.
+  Same as "table_sess_cnt" converter with key set to the incoming connection's
+  source address.
+
+  Equivalent to: src,table_sess_cnt([<table>])
 
 src_sess_rate([<table>]) : integer
-  Returns the average session rate from the incoming connection's source
-  address in the current proxy's stick-table or in the designated stick-table,
-  measured in amount of sessions over the period configured in the table. A
-  session is a connection that went past the early "tcp-request" rules. If the
-  address is not found, zero is returned. See also sc/sc0/sc1/sc2_sess_rate.
+  Same as "table_sess_rate" converter with key set to the incoming connection's
+  source address.
+
+  Equivalent to: src,table_sess_rate([<table>])
 
 src_updt_conn_cnt([<table>]) : integer
   Creates or updates the entry associated to the incoming connection's source
