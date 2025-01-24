@@ -118,8 +118,6 @@ struct quic_cc_path {
 	uint64_t in_flight;
 	/* Number of in flight ack-eliciting packets. */
 	uint64_t ifae_pkts;
-	/* Burst size if pacing is used. Not used if congestion algo handle pacing itself. */
-	uint32_t pacing_burst;
 	uint64_t delivery_rate; /* bytes per second */
 	size_t send_quantum;
 	uint32_t recovery_start_ts;
@@ -140,7 +138,7 @@ struct quic_cc_algo {
 	void (*hystart_start_round)(struct quic_cc *cc, uint64_t pn);
 
 	/* Defined only if pacing is used. */
-	uint (*pacing_rate)(const struct quic_cc *cc);
+	uint (*pacing_inter)(const struct quic_cc *cc);
 	uint (*pacing_burst)(const struct quic_cc *cc);
 
 	struct quic_cc_drs *(*get_drs)(struct quic_cc *cc);
