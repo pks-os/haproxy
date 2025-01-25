@@ -542,6 +542,7 @@ static int debug_parse_cli_show_libs(char **args, char *payload, struct appctx *
 static int debug_parse_cli_show_dev(char **args, char *payload, struct appctx *appctx, void *private)
 {
 	const char **build_opt;
+	char *err = NULL;
 	int i;
 
 	if (*args[2])
@@ -595,12 +596,6 @@ static int debug_parse_cli_show_dev(char **args, char *payload, struct appctx *a
 	for (i = 0; i < post_mortem.process.argc; i++)
 		chunk_appendf(&trash, "%s ", post_mortem.process.argv[i]);
 	chunk_appendf(&trash, "\n");
-
-	chunk_appendf(&trash, "  boot uid: %d\n", post_mortem.process.boot_uid);
-	chunk_appendf(&trash, "  runtime uid: %d\n", post_mortem.process.run_uid);
-	chunk_appendf(&trash, "  boot gid: %d\n", post_mortem.process.boot_gid);
-	chunk_appendf(&trash, "  runtime gid: %d\n", post_mortem.process.run_gid);
-
 #if defined(USE_LINUX_CAP)
 	/* let's dump saved in feed_post_mortem() initial capabilities sets */
 	if(!post_mortem.process.caps.err_boot) {
@@ -616,7 +611,7 @@ static int debug_parse_cli_show_dev(char **args, char *payload, struct appctx *a
 					     post_mortem.process.caps.boot[1].inheritable));
 	} else
 		chunk_appendf(&trash, "  capget() failed at boot with: %s.\n",
-			      strerror(post_mortem.process.caps.err_boot));
+			      errname(post_mortem.process.caps.err_boot, &err));
 
 	/* let's print actual capabilities sets, could be useful in order to compare */
 	if (!post_mortem.process.caps.err_run) {
@@ -632,27 +627,29 @@ static int debug_parse_cli_show_dev(char **args, char *payload, struct appctx *a
 					     post_mortem.process.caps.run[1].inheritable));
 	} else
 		chunk_appendf(&trash, "  capget() failed at runtime with: %s.\n",
-			      strerror(post_mortem.process.caps.err_run));
+			      errname(post_mortem.process.caps.err_run, &err));
 #endif
-	chunk_appendf(&trash, "  boot limits:\n");
-	chunk_appendf(&trash, "  \tfd limit (soft): %s\n",
-		      LIM2A(normalize_rlim(post_mortem.process.boot_lim_fd.rlim_cur), "unlimited"));
-	chunk_appendf(&trash, "  \tfd limit (hard): %s\n",
-		      LIM2A(normalize_rlim(post_mortem.process.boot_lim_fd.rlim_max), "unlimited"));
-	chunk_appendf(&trash, "  \tram limit (soft): %s\n",
-		      LIM2A(normalize_rlim(post_mortem.process.boot_lim_ram.rlim_cur), "unlimited"));
-	chunk_appendf(&trash, "  \tram limit (hard): %s\n",
-		      LIM2A(normalize_rlim(post_mortem.process.boot_lim_ram.rlim_max), "unlimited"));
 
-	chunk_appendf(&trash, "  runtime limits:\n");
-	chunk_appendf(&trash, "  \tfd limit (soft): %s\n",
-		      LIM2A(normalize_rlim(post_mortem.process.run_lim_fd.rlim_cur), "unlimited"));
-	chunk_appendf(&trash, "  \tfd limit (hard): %s\n",
-		      LIM2A(normalize_rlim(post_mortem.process.run_lim_fd.rlim_max), "unlimited"));
-	chunk_appendf(&trash, "  \tram limit (soft): %s\n",
-		      LIM2A(normalize_rlim(post_mortem.process.run_lim_ram.rlim_cur), "unlimited"));
-	chunk_appendf(&trash, "  \tram limit (hard): %s\n",
-		      LIM2A(normalize_rlim(post_mortem.process.run_lim_ram.rlim_max), "unlimited"));
+	chunk_appendf(&trash, "  %-22s  %-11s  %-11s \n", "identity:", "-boot-", "-runtime-");
+	chunk_appendf(&trash, "  %-22s  %-11d  %-11d \n", "    uid:", post_mortem.process.boot_uid,
+		                                                      post_mortem.process.run_uid);
+	chunk_appendf(&trash, "  %-22s  %-11d  %-11d \n", "    gid:", post_mortem.process.boot_gid,
+		                                                      post_mortem.process.run_gid);
+	chunk_appendf(&trash, "  %-22s  %-11s  %-11s \n", "limits:", "-boot-", "-runtime-");
+	chunk_appendf(&trash, "  %-22s  %-11s  %-11s \n", "    fd limit (soft):",
+		LIM2A(normalize_rlim((ulong)post_mortem.process.boot_lim_fd.rlim_cur), "unlimited"),
+		LIM2A(normalize_rlim((ulong)post_mortem.process.run_lim_fd.rlim_cur), "unlimited"));
+	chunk_appendf(&trash, "  %-22s  %-11s  %-11s \n", "    fd limit (hard):",
+		LIM2A(normalize_rlim((ulong)post_mortem.process.boot_lim_fd.rlim_max), "unlimited"),
+		LIM2A(normalize_rlim((ulong)post_mortem.process.run_lim_fd.rlim_max), "unlimited"));
+	chunk_appendf(&trash, "  %-22s  %-11s  %-11s \n", "    ram limit (soft):",
+		LIM2A(normalize_rlim((ulong)post_mortem.process.boot_lim_ram.rlim_cur), "unlimited"),
+		LIM2A(normalize_rlim((ulong)post_mortem.process.run_lim_ram.rlim_cur), "unlimited"));
+	chunk_appendf(&trash, "  %-22s  %-11s  %-11s \n", "    ram limit (hard):",
+		LIM2A(normalize_rlim((ulong)post_mortem.process.boot_lim_ram.rlim_max), "unlimited"),
+		LIM2A(normalize_rlim((ulong)post_mortem.process.run_lim_ram.rlim_max), "unlimited"));
+
+	ha_free(&err);
 
 	return cli_msg(appctx, LOG_INFO, trash.area);
 }
